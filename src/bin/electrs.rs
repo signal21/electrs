@@ -67,6 +67,7 @@ fn run_server(config: Arc<Config>) -> Result<()> {
         Arc::clone(&daemon),
         &config,
         &metrics,
+        false,
     ));
 
     if let Some(ref precache_file) = config.precache_scripts {

@@ -4,19 +4,24 @@ extern crate log;
 
 extern crate electrs;
 
+use bitcoin::{Transaction, Txid};
 use error_chain::ChainedError;
-use rustyline::{error::ReadlineError, DefaultEditor, Editor};
+use rustyline::{error::ReadlineError, DefaultEditor};
 use std::process;
 use std::sync::Arc;
 
+use bitcoin::consensus::encode::deserialize;
 use electrs::{
+    chain,
     config::Config,
     daemon::Daemon,
     errors::*,
     metrics::Metrics,
-    new_index::{ChainQuery, Store},
+    new_index::{compute_script_hash, ChainQuery, Store},
     signal::Waiter,
 };
+use hex::DisplayHex;
+use std::str::FromStr;
 
 fn split_line_to_cmds(line: &str) -> Vec<String> {
     let mut cmds = Vec::new();
@@ -72,6 +77,37 @@ fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
             };
             println!("Block: {}", height);
         }
+        "stats" => {
+            if cmds.len() < 2 {
+                return Err("Missing txid".into());
+            }
+            if let Ok(addr) = chain::address::Address::from_str(&cmds[1]) {
+                let addr = addr.assume_checked();
+                let script_hash = compute_script_hash(&addr.script_pubkey());
+                let stats = query.stats(&script_hash);
+                println!("Stats: {:?}", stats);
+            } else {
+                return Err("Invalid address".into());
+            }
+        }
+        "rawtx" => {
+            if cmds.len() < 2 {
+                return Err("Missing txid".into());
+            }
+            if let Ok(txid) = Txid::from_str(&cmds[1]).chain_err(|| "Invalid txid") {
+                if let Some(rawtx) = query.lookup_raw_txn(&txid, None) {
+                    if let Ok(txn) = deserialize::<Transaction>(&rawtx) {
+                        txn.input.iter().for_each(|i| {
+                            i.witness.iter().for_each(|w| {
+                                println!("Witness: {:?}", Vec::from(w).to_lower_hex_string())
+                            });
+                        });
+                    } else {
+                        println!("Failed to deserialize tx");
+                    }
+                }
+            }
+        }
         _ => println!("Unknown command: {}", cmds[0]),
     }
     Ok(())
@@ -100,6 +136,7 @@ fn run_script(config: Arc<Config>) -> Result<()> {
         Arc::clone(&daemon),
         &config,
         &metrics,
+        true,
     ));
 
     let mut rl = DefaultEditor::new()?;

@@ -210,6 +210,7 @@ pub struct ChainQuery {
     light_mode: bool,
     duration: HistogramVec,
     network: Network,
+    readonly_mode: bool,
 }
 
 // TODO: &[Block] should be an iterator / a queue.
@@ -362,7 +363,13 @@ impl Indexer {
 }
 
 impl ChainQuery {
-    pub fn new(store: Arc<Store>, daemon: Arc<Daemon>, config: &Config, metrics: &Metrics) -> Self {
+    pub fn new(
+        store: Arc<Store>,
+        daemon: Arc<Daemon>,
+        config: &Config,
+        metrics: &Metrics,
+        ro_mode: bool,
+    ) -> Self {
         ChainQuery {
             store,
             daemon,
@@ -372,6 +379,7 @@ impl ChainQuery {
                 HistogramOpts::new("query_duration", "Index query duration (in seconds)"),
                 &["name"],
             ),
+            readonly_mode: ro_mode,
         }
     }
 
@@ -664,12 +672,15 @@ impl ChainQuery {
         );
 
         // save updated stats to cache
-        if let Some(lastblock) = lastblock {
-            if newstats.funded_txo_count + newstats.spent_txo_count > MIN_HISTORY_ITEMS_TO_CACHE {
-                self.store.cache_db.write(
-                    vec![StatsCacheRow::new(scripthash, &newstats, &lastblock).into_row()],
-                    DBFlush::Enable,
-                );
+        if !self.readonly_mode {
+            if let Some(lastblock) = lastblock {
+                if newstats.funded_txo_count + newstats.spent_txo_count > MIN_HISTORY_ITEMS_TO_CACHE
+                {
+                    self.store.cache_db.write(
+                        vec![StatsCacheRow::new(scripthash, &newstats, &lastblock).into_row()],
+                        DBFlush::Enable,
+                    );
+                }
             }
         }
 

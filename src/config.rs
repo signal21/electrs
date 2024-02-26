@@ -378,6 +378,7 @@ impl Config {
         } else {
             stderrlog::Timestamp::Off
         });
+        log.modules(&["electrs".to_string()]);
         log.init().expect("logging initialization failed");
         let config = Config {
             log,

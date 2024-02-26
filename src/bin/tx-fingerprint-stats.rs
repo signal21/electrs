@@ -41,7 +41,7 @@ fn main() {
         .unwrap(),
     );
 
-    let chain = ChainQuery::new(Arc::clone(&store), Arc::clone(&daemon), &config, &metrics);
+    let chain = ChainQuery::new(Arc::clone(&store), Arc::clone(&daemon), &config, &metrics, false);
 
     let mut indexer = Indexer::open(Arc::clone(&store), FetchFrom::Bitcoind, &config, &metrics);
     indexer.update(&daemon).unwrap();

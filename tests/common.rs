@@ -155,6 +155,7 @@ impl TestRunner {
             Arc::clone(&daemon),
             &config,
             &metrics,
+            false,
         ));
 
         let mempool = Arc::new(RwLock::new(Mempool::new(
