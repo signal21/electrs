@@ -26,6 +26,9 @@ error_chain! {
         }
 
     }
+    foreign_links {
+        Readline(::rustyline::error::ReadlineError);
+    }
 }
 
 #[cfg(feature = "electrum-discovery")]

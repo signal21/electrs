@@ -40,7 +40,7 @@ fn fetch_from(config: &Config, store: &Store) -> FetchFrom {
 }
 
 fn run_server(config: Arc<Config>) -> Result<()> {
-    let signal = Waiter::start();
+    let signal: Waiter = Waiter::start();
     let metrics = Metrics::new(config.monitoring_addr);
     metrics.start();
 

@@ -55,6 +55,7 @@ tokio = { version = "1", features = ["sync", "macros"] }
 
 # optional dependencies for electrum-discovery
 electrum-client = { version = "0.8", optional = true }
+rustyline = "13.0.0"
 
 
 [dev-dependencies]
