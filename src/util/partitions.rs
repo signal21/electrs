@@ -15,24 +15,27 @@ pub struct TxPartition {
     pub height_start: u32,
     pub height_end: u32,
     writer: Option<ArrowWriter<File>>,
+    path: String,
 }
 
 pub struct Partitioner {
     partitions: Vec<TxPartition>,
+    path: String,
     work: Option<usize>,
     partition_size: u32,
 }
 
 impl TxPartition {
-    pub fn new(start: u32, end: u32) -> TxPartition {
+    pub fn new(path: &str, start: u32, end: u32) -> TxPartition {
         TxPartition {
             height_start: start,
             height_end: end,
             writer: None,
+            path: path.to_string(),
         }
     }
 
-    pub fn from_filename(filename: &str) -> Option<TxPartition> {
+    pub fn from_filename(path: &str, filename: &str) -> Option<TxPartition> {
         let parts: Vec<&str> = filename.split('_').collect();
         if parts.len() != 3 {
             return None;
@@ -46,11 +49,15 @@ impl TxPartition {
             height_start,
             height_end,
             writer: None,
+            path: path.to_string(),
         })
     }
 
     pub fn filename(&self) -> String {
-        format!("blocks_{}_{}.parquet", self.height_start, self.height_end)
+        format!(
+            "{}/blocks_{}_{}.parquet",
+            self.path, self.height_start, self.height_end
+        )
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -118,10 +125,11 @@ impl Partitioner {
         let dir = fs::read_dir(path)?;
         for entry in dir {
             let entry = entry?;
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(filename) = path.file_name() {
-                    if let Some(partition) = TxPartition::from_filename(filename.to_str().unwrap())
+            let file_path = entry.path();
+            if file_path.is_file() {
+                if let Some(filename) = file_path.file_name() {
+                    if let Some(partition) =
+                        TxPartition::from_filename(path, filename.to_str().unwrap())
                     {
                         actual_size = &partition.height_end - &partition.height_start;
                         partitions.push(partition);
@@ -132,6 +140,7 @@ impl Partitioner {
         partitions.sort_by_key(|p| p.height_start);
         Ok(Partitioner {
             partitions,
+            path: path.to_string(),
             partition_size: actual_size,
             work: None,
         })
@@ -147,6 +156,7 @@ impl Partitioner {
             height_start: start,
             height_end: end,
             writer: None,
+            path: self.path.clone(),
         });
         self.work = Some(self.partitions.len() - 1);
         self.partitions.last_mut().unwrap()
@@ -191,29 +201,29 @@ mod tests {
 
     #[test]
     fn test_partition() {
-        let p = TxPartition::new(0, 100);
+        let p = TxPartition::new("out", 0, 100);
         assert_eq!(p.height_start, 0);
         assert_eq!(p.height_end, 100);
-        assert_eq!(p.filename(), "blocks_0_100.parquet");
+        assert_eq!(p.filename(), "out/blocks_0_100.parquet");
     }
 
     #[test]
     fn test_partition_from_filename() {
-        let p = TxPartition::from_filename("blocks_0_100.parquet").unwrap();
+        let p = TxPartition::from_filename("out1", "blocks_0_100.parquet").unwrap();
         assert_eq!(p.height_start, 0);
         assert_eq!(p.height_end, 100);
     }
 
     #[test]
     fn test_partition_from_bad_filename() {
-        let p = TxPartition::from_filename("blocks_0_100").unwrap();
+        let p = TxPartition::from_filename("out1", "blocks_0_100").unwrap();
         assert_eq!(p.height_start, 0);
         assert_eq!(p.height_end, 100);
     }
 
     #[test]
     fn test_partition_from_bad_filename2() {
-        let p = TxPartition::from_filename("blocks_0_100.parquet").unwrap();
+        let p = TxPartition::from_filename("out1", "blocks_0_100.parquet").unwrap();
         assert_eq!(p.height_start, 0);
         assert_eq!(p.height_end, 100);
     }
@@ -221,6 +231,7 @@ mod tests {
     #[test]
     fn test_partitioner() {
         let mut p = Partitioner {
+            path: "out".to_string(),
             partitions: Vec::new(),
             partition_size: 100,
             work: None,
@@ -229,11 +240,13 @@ mod tests {
         let part = p.get_partition(50).unwrap();
         assert_eq!(part.height_start, 0);
         assert_eq!(part.height_end, 100);
+        assert_eq!(part.filename(), "out/blocks_0_100.parquet");
     }
 
     #[test]
     fn test_partitioner_add_partition() {
         let mut p = Partitioner {
+            path: "out".to_string(),
             partitions: Vec::new(),
             partition_size: 100,
             work: None,
