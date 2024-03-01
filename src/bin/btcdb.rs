@@ -4,8 +4,13 @@ extern crate log;
 
 extern crate electrs;
 
-use bitcoin::{Transaction, Txid};
+use arrow::{
+    array::{ArrayRef, BinaryArray, RecordBatch, UInt32Array},
+    datatypes::{DataType, Field, Schema},
+};
+use bitcoin::{hashes::Hash, Transaction, Txid};
 use error_chain::ChainedError;
+use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use rustyline::{error::ReadlineError, DefaultEditor};
 use std::process;
 use std::sync::Arc;
@@ -19,6 +24,7 @@ use electrs::{
     metrics::Metrics,
     new_index::{compute_script_hash, ChainQuery, Store},
     signal::Waiter,
+    util::partitions::{Partitioner, TxPartition},
 };
 use hex::DisplayHex;
 use std::str::FromStr;
@@ -108,6 +114,83 @@ fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
                 }
             }
         }
+        "tx" => {
+            if cmds.len() < 2 {
+                return Err("Missing txid".into());
+            }
+            if let Ok(txid) = Txid::from_str(&cmds[1]).chain_err(|| "Invalid txid") {
+                if let Some(tx) = query.lookup_txn(&txid, None) {
+                    println!("Tx: {:?}", tx);
+                } else {
+                    println!("Tx not found");
+                }
+            }
+        }
+        "block" => {
+            if cmds.len() < 2 {
+                return Err("Missing block hash".into());
+            }
+            if let Ok(height) = cmds[1].parse::<u32>() {
+                if let Some(block_id) = query.blockid_by_height(height as usize) {
+                    println!("Block: {:?}", block_id.hash);
+                    if let Some(txids) = query.get_block_txids(&block_id.hash) {
+                        txids.iter().for_each(|txid| {
+                            println!("Txid: {}", txid);
+                        });
+                    }
+                } else {
+                    println!("Block not found");
+                }
+            } else if let Ok(blockhash) = chain::BlockHash::from_str(&cmds[1]) {
+                let block = query.blockid_by_hash(&blockhash);
+                println!("Block: {:?}", block);
+            } else {
+                return Err("Invalid block hash".into());
+            }
+        }
+        "write-blocks" => {
+            if cmds.len() < 4 {
+                return Err("Missing block start, end and path".into());
+            }
+            let start = cmds[1]
+                .parse::<u32>()
+                .chain_err(|| "Invalid block height")?;
+            let end = cmds[2]
+                .parse::<u32>()
+                .chain_err(|| "Invalid block height")?;
+            let path = cmds[3].clone();
+            write_blocks(query, start, end, &path)?;
+        }
+        "write-txs" => {
+            if cmds.len() < 4 {
+                return Err("Missing tx start, end and path".into());
+            }
+            let start = cmds[1].parse::<u32>().chain_err(|| "Invalid tx height")?;
+            let end = cmds[2].parse::<u32>().chain_err(|| "Invalid tx height")?;
+            let path = cmds[3].clone();
+            let mut partitioner = Partitioner::load_partitions(&path, 100)?;
+            for height in start..end {
+                if let Some(block_id) = query.blockid_by_height(height as usize) {
+                    let p: &mut TxPartition = if let Some(partition) = partitioner.get_partition(height) {
+                        partition
+                    } else {
+                        let new_p = partitioner.add_partition(height, height + 100);
+                        new_p
+                    };
+                    println!("Block: {:?}, partition {}", block_id.hash, p.filename());
+                    if let Some(txids) = query.get_block_txids(&block_id.hash) {
+                        let mut hashes = Vec::new();
+                        txids.iter().for_each(|txid| {
+                            hashes.push(txid.to_byte_array());
+                        });
+                        p.write(height, hashes)?;
+                    }
+                } else {
+                    println!("Block not found");
+                }
+            }
+            partitioner.close();
+        }
         _ => println!("Unknown command: {}", cmds[0]),
     }
     Ok(())
@@ -183,4 +266,60 @@ fn main() {
         error!("server failed: {}", e.display_chain());
         process::exit(1);
     }
+}
+
+fn write_blocks(query: &Arc<ChainQuery>, start: u32, end: u32, path: &str) -> Result<()> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("height", DataType::UInt32, false),
+        Field::new("hash", DataType::Binary, false),
+        Field::new("time", DataType::UInt32, false),
+        Field::new("size", DataType::UInt32, false),
+        Field::new("weight", DataType::UInt32, false),
+        Field::new("tx_count", DataType::UInt32, false),
+    ]));
+    let file = std::fs::File::create(path)?;
+    let props = WriterProperties::builder().build();
+    let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))?;
+
+    let mut heights = Vec::new();
+    let mut hashes = Vec::new();
+    let mut times = Vec::new();
+    let mut sizes = Vec::new();
+    let mut weights = Vec::new();
+    let mut tx_counts = Vec::new();
+
+    let mut count = 0;
+    for height in start..end {
+        if let Some(block_id) = query.blockid_by_height(height as usize) {
+            if let Some(block_meta) = query.get_block_meta(&block_id.hash) {
+                if let Some(block_header) = query.get_block_header(&block_id.hash) {
+                    heights.push(height);
+                    let hash = block_id.hash.as_raw_hash().to_byte_array();
+                    hashes.push(hash);
+                    times.push(block_header.time);
+                    sizes.push(block_meta.size as u32);
+                    weights.push(block_meta.weight as u32);
+                    tx_counts.push(block_meta.tx_count as u32);
+                    count += 1;
+                }
+            }
+        }
+    }
+    println!("processed {} blocks", count);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(UInt32Array::from(heights)) as ArrayRef,
+            Arc::new(BinaryArray::from(
+                hashes.iter().map(|h| &h[..]).collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(UInt32Array::from(times)) as ArrayRef,
+            Arc::new(UInt32Array::from(sizes)) as ArrayRef,
+            Arc::new(UInt32Array::from(weights)) as ArrayRef,
+            Arc::new(UInt32Array::from(tx_counts)) as ArrayRef,
+        ],
+    )?;
+    writer.write(&batch)?;
+    writer.close()?;
+    Ok(())
 }

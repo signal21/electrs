@@ -28,6 +28,9 @@ error_chain! {
     }
     foreign_links {
         Readline(::rustyline::error::ReadlineError);
+        Io(::std::io::Error);
+        Parquet(::parquet::errors::ParquetError);
+        Arrow(::arrow::error::ArrowError);
     }
 }
 

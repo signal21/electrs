@@ -5,6 +5,7 @@ mod transaction;
 pub mod bincode;
 pub mod electrum_merkle;
 pub mod fees;
+pub mod partitions;
 
 pub use self::block::{
     BlockHeaderMeta, BlockId, BlockMeta, BlockStatus, HeaderEntry, HeaderList, DEFAULT_BLOCKHASH,
