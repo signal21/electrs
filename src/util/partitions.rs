@@ -24,7 +24,7 @@ pub struct Partitioner<'a> {
     partitions: Vec<TxPartition>,
     path: String,
     work: Option<usize>,
-    partition_size: u32,
+    // partition_size: u32,
     storage: &'a dyn CloudStorageTrait,
 }
 
@@ -131,11 +131,11 @@ impl<'a> Partitioner<'a> {
         desired_size: u32,
     ) -> Result<Partitioner> {
         let mut partitions = Vec::new();
-        let mut actual_size = desired_size;
+        let mut _actual_size = desired_size;
         let files = storage.list_objects(&bucket).await?;
         for file in files {
             if let Some(partition) = TxPartition::from_filename(&bucket, &file) {
-                actual_size = &partition.height_end - &partition.height_start;
+                // actual_size = &partition.height_end - &partition.height_start;
                 partitions.push(partition);
             }
         }
@@ -144,7 +144,7 @@ impl<'a> Partitioner<'a> {
             storage,
             partitions,
             path: bucket,
-            partition_size: actual_size,
+            // partition_size: actual_size,
             work: None,
         })
     }

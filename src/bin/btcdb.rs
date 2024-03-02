@@ -58,7 +58,7 @@ fn split_line_to_cmds(line: &str) -> Vec<String> {
     cmds
 }
 
-fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
+async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
     let cmds = split_line_to_cmds(line);
     if cmds.is_empty() {
         return Ok(());
@@ -172,14 +172,14 @@ fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
             let end = cmds[2].parse::<u32>().chain_err(|| "Invalid tx height")?;
             let path = cmds[3].clone();
             let client = CloudStorage::new()?;
-            let mut partitioner = Partitioner::load_partitions(client, &path, 100)?;
+            let mut partitioner = Partitioner::load_partitions(&client, path, 100).await?;
             for height in start..end {
                 if let Some(block_id) = query.blockid_by_height(height as usize) {
                     let p: &mut TxPartition =
-                        if let Some(partition) = partitioner.get_partition(height) {
+                        if let Some(partition) = partitioner.get_partition(height).await? {
                             partition
                         } else {
-                            let new_p = partitioner.add_partition(height, height + 100);
+                            let new_p = partitioner.add_partition(height, height + 100).await?;
                             new_p
                         };
                     println!("Block: {:?}, partition {}", block_id.hash, p.filename());
@@ -194,14 +194,14 @@ fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
                     println!("Block not found");
                 }
             }
-            partitioner.close();
+            partitioner.close().await?;
         }
         _ => println!("Unknown command: {}", cmds[0]),
     }
     Ok(())
 }
 
-fn run_script(config: Arc<Config>) -> Result<()> {
+async fn run_script(config: Arc<Config>) -> Result<()> {
     let signal: Waiter = Waiter::start();
 
     let metrics = Metrics::new(config.monitoring_addr);
@@ -235,9 +235,9 @@ fn run_script(config: Arc<Config>) -> Result<()> {
         match rl.readline(">> ") {
             Ok(line) => {
                 println!("Line: {}", line);
-                match switch_line(line.as_str(), &chain) {
+                match switch_line(line.as_str(), &chain).await {
                     Ok(_) => {
-                        rl.add_history_entry(line.as_str());
+                        rl.add_history_entry(line.as_str())?;
                     }
                     Err(e) => {
                         println!("Error: {}", e.display_chain());
@@ -265,10 +265,13 @@ fn run_script(config: Arc<Config>) -> Result<()> {
     Ok(())
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     dotenv::dotenv().ok();
+    let access_key = std::env::var("OCI_ACCESS_KEY").unwrap();
+    println!("access key: {}", &access_key);
     let config = Arc::new(Config::from_args());
-    if let Err(e) = run_script(config) {
+    if let Err(e) = run_script(config).await {
         error!("server failed: {}", e.display_chain());
         process::exit(1);
     }

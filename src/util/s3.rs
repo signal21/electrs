@@ -91,7 +91,7 @@ impl CloudStorageTrait for CloudStorage {
 }
 
 mod tests {
-    use super::*;
+    // use super::*;
 
     #[tokio::test]
     async fn test_list_buckets() {
