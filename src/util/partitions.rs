@@ -11,6 +11,8 @@ use arrow::{
 use itertools::Itertools;
 use parquet::arrow::ArrowWriter;
 
+use super::s3::CloudStorageTrait;
+
 pub struct TxPartition {
     pub height_start: u32,
     pub height_end: u32,
@@ -18,11 +20,12 @@ pub struct TxPartition {
     path: String,
 }
 
-pub struct Partitioner {
+pub struct Partitioner<'a> {
     partitions: Vec<TxPartition>,
     path: String,
     work: Option<usize>,
     partition_size: u32,
+    storage: &'a dyn CloudStorageTrait,
 }
 
 impl TxPartition {
@@ -109,47 +112,47 @@ impl TxPartition {
         Ok(res)
     }
 
-    pub fn close(&mut self) -> Result<()> {
+    pub async fn close(&mut self, storage: &dyn CloudStorageTrait) -> Result<()> {
         if let Some(writer) = self.writer.take() {
             writer.close()?;
             self.writer = None;
+            storage
+                .upload_file(&self.path, &self.filename(), fs::read(self.filename())?)
+                .await?;
         }
         Ok(())
     }
 }
 
-impl Partitioner {
-    pub fn load_partitions(path: &str, desired_size: u32) -> Result<Partitioner> {
+impl<'a> Partitioner<'a> {
+    pub async fn load_partitions(
+        storage: &'a dyn CloudStorageTrait,
+        bucket: String,
+        desired_size: u32,
+    ) -> Result<Partitioner> {
         let mut partitions = Vec::new();
         let mut actual_size = desired_size;
-        let dir = fs::read_dir(path)?;
-        for entry in dir {
-            let entry = entry?;
-            let file_path = entry.path();
-            if file_path.is_file() {
-                if let Some(filename) = file_path.file_name() {
-                    if let Some(partition) =
-                        TxPartition::from_filename(path, filename.to_str().unwrap())
-                    {
-                        actual_size = &partition.height_end - &partition.height_start;
-                        partitions.push(partition);
-                    }
-                }
+        let files = storage.list_objects(&bucket).await?;
+        for file in files {
+            if let Some(partition) = TxPartition::from_filename(&bucket, &file) {
+                actual_size = &partition.height_end - &partition.height_start;
+                partitions.push(partition);
             }
         }
         partitions.sort_by_key(|p| p.height_start);
         Ok(Partitioner {
+            storage,
             partitions,
-            path: path.to_string(),
+            path: bucket,
             partition_size: actual_size,
             work: None,
         })
     }
 
-    pub fn add_partition(&mut self, start: u32, end: u32) -> &mut TxPartition {
+    pub async fn add_partition(&mut self, start: u32, end: u32) -> Result<&mut TxPartition> {
         if let Some(work) = self.work {
             if let Some(partition) = self.partitions.get_mut(work as usize) {
-                partition.close().ok();
+                partition.close(self.storage).await?;
             }
         }
         self.partitions.push(TxPartition {
@@ -159,10 +162,10 @@ impl Partitioner {
             path: self.path.clone(),
         });
         self.work = Some(self.partitions.len() - 1);
-        self.partitions.last_mut().unwrap()
+        Ok(self.partitions.last_mut().unwrap())
     }
 
-    pub fn get_partition(&mut self, height: u32) -> Option<&mut TxPartition> {
+    pub async fn get_partition(&mut self, height: u32) -> Result<Option<&mut TxPartition>> {
         let x = self
             .partitions
             .iter()
@@ -171,13 +174,13 @@ impl Partitioner {
             if let Some(work) = self.work {
                 if work != i {
                     if let Some(partition) = self.partitions.get_mut(work as usize) {
-                        partition.close().ok();
+                        partition.close(self.storage).await?;
                     }
                 }
             }
-            Some(&mut self.partitions[i])
+            Ok(Some(&mut self.partitions[i]))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -185,10 +188,10 @@ impl Partitioner {
         self.partitions.last()
     }
 
-    pub fn close(&mut self) -> Result<()> {
+    pub async fn close(&mut self) -> Result<()> {
         if let Some(work) = self.work {
             if let Some(partition) = self.partitions.get_mut(work as usize) {
-                partition.close()?;
+                partition.close(self.storage).await?;
             }
         }
         Ok(())
@@ -228,32 +231,57 @@ mod tests {
         assert_eq!(p.height_end, 100);
     }
 
-    #[test]
-    fn test_partitioner() {
+    struct FakeStorage {}
+
+    #[async_trait::async_trait]
+    impl CloudStorageTrait for FakeStorage {
+        async fn create_bucket(&self, _bucket: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn list_buckets(&self) -> Result<Vec<String>> {
+            Ok(vec!["bucket1".to_string()])
+        }
+
+        async fn list_objects(&self, _bucket: &str) -> Result<Vec<String>> {
+            Ok(vec!["blocks_0_100.parquet".to_string()])
+        }
+
+        async fn upload_file(&self, _bucket: &str, _key: &str, _data: Vec<u8>) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_partitioner() {
+        let storage = FakeStorage {};
         let mut p = Partitioner {
+            storage: &storage,
             path: "out".to_string(),
             partitions: Vec::new(),
             partition_size: 100,
             work: None,
         };
-        p.add_partition(0, 100);
-        let part = p.get_partition(50).unwrap();
+        p.add_partition(0, 100).await.unwrap();
+        let part = p.get_partition(50).await.unwrap().unwrap();
         assert_eq!(part.height_start, 0);
         assert_eq!(part.height_end, 100);
         assert_eq!(part.filename(), "out/blocks_0_100.parquet");
     }
 
-    #[test]
-    fn test_partitioner_add_partition() {
+    #[tokio::test]
+    async fn test_partitioner_add_partition() {
+        let storage = FakeStorage {};
         let mut p = Partitioner {
+            storage: &storage,
             path: "out".to_string(),
             partitions: Vec::new(),
             partition_size: 100,
             work: None,
         };
-        p.add_partition(0, 100);
-        p.add_partition(100, 200);
-        let part = p.get_partition(150).unwrap();
+        p.add_partition(0, 100).await.unwrap();
+        p.add_partition(100, 200).await.unwrap();
+        let part = p.get_partition(150).await.unwrap().unwrap();
         assert_eq!(part.height_start, 100);
         assert_eq!(part.height_end, 200);
         assert_eq!(p.partitions.len(), 2);

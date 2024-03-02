@@ -31,6 +31,11 @@ error_chain! {
         Io(::std::io::Error);
         Parquet(::parquet::errors::ParquetError);
         Arrow(::arrow::error::ArrowError);
+        S3ListBucketError(::rusoto_core::RusotoError<::rusoto_s3::ListBucketsError>);
+        S3PutObjectError(::rusoto_core::RusotoError<::rusoto_s3::PutObjectError>);
+        S3ListObjectsError(::rusoto_core::RusotoError<::rusoto_s3::ListObjectsV2Error>);
+        S3CreateBucketError(::rusoto_core::RusotoError<::rusoto_s3::CreateBucketError>);
+        VarError(::std::env::VarError);
     }
 }
 

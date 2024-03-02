@@ -58,6 +58,10 @@ electrum-client = { version = "0.8", optional = true }
 rustyline = "13.0.0"
 parquet = "50.0.0"
 arrow = "50.0.0"
+rusoto_core = "0.48.0"
+rusoto_s3 = "0.48.0"
+async-trait = "0.1.77"
+dotenv = "0.15.0"
 
 
 [dev-dependencies]

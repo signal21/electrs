@@ -24,7 +24,10 @@ use electrs::{
     metrics::Metrics,
     new_index::{compute_script_hash, ChainQuery, Store},
     signal::Waiter,
-    util::partitions::{Partitioner, TxPartition},
+    util::{
+        partitions::{Partitioner, TxPartition},
+        s3::CloudStorage,
+    },
 };
 use hex::DisplayHex;
 use std::str::FromStr;
@@ -168,15 +171,17 @@ fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
             let start = cmds[1].parse::<u32>().chain_err(|| "Invalid tx height")?;
             let end = cmds[2].parse::<u32>().chain_err(|| "Invalid tx height")?;
             let path = cmds[3].clone();
-            let mut partitioner = Partitioner::load_partitions(&path, 100)?;
+            let client = CloudStorage::new()?;
+            let mut partitioner = Partitioner::load_partitions(client, &path, 100)?;
             for height in start..end {
                 if let Some(block_id) = query.blockid_by_height(height as usize) {
-                    let p: &mut TxPartition = if let Some(partition) = partitioner.get_partition(height) {
-                        partition
-                    } else {
-                        let new_p = partitioner.add_partition(height, height + 100);
-                        new_p
-                    };
+                    let p: &mut TxPartition =
+                        if let Some(partition) = partitioner.get_partition(height) {
+                            partition
+                        } else {
+                            let new_p = partitioner.add_partition(height, height + 100);
+                            new_p
+                        };
                     println!("Block: {:?}, partition {}", block_id.hash, p.filename());
                     if let Some(txids) = query.get_block_txids(&block_id.hash) {
                         let mut hashes = Vec::new();
@@ -261,6 +266,7 @@ fn run_script(config: Arc<Config>) -> Result<()> {
 }
 
 fn main() {
+    dotenv::dotenv().ok();
     let config = Arc::new(Config::from_args());
     if let Err(e) = run_script(config) {
         error!("server failed: {}", e.display_chain());
