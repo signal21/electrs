@@ -25,7 +25,7 @@ use electrs::{
     new_index::{compute_script_hash, ChainQuery, Store},
     signal::Waiter,
     util::{
-        partitions::{Partitioner, TxPartition},
+        partitions::{block_batch, tx_batch, BtcPartition, BtcPartitionData, Partitioner},
         s3::CloudStorage,
     },
 };
@@ -152,17 +152,14 @@ async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
             }
         }
         "write-blocks" => {
-            if cmds.len() < 4 {
+            if cmds.len() < 3 {
                 return Err("Missing block start, end and path".into());
             }
             let start = cmds[1]
                 .parse::<u32>()
                 .chain_err(|| "Invalid block height")?;
-            let end = cmds[2]
-                .parse::<u32>()
-                .chain_err(|| "Invalid block height")?;
-            let path = cmds[3].clone();
-            write_blocks(query, start, end, &path)?;
+            let path = cmds[2].clone();
+            write_blocks(query, start, &path).await?;
         }
         "write-txs" => {
             if cmds.len() < 4 {
@@ -172,14 +169,16 @@ async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
             let end = cmds[2].parse::<u32>().chain_err(|| "Invalid tx height")?;
             let path = cmds[3].clone();
             let client = CloudStorage::new()?;
-            let mut partitioner = Partitioner::load_partitions(&client, path, 100).await?;
+            let mut partitioner = Partitioner::load_partitions(&client, &path, &path, 100).await?;
             for height in start..end {
                 if let Some(block_id) = query.blockid_by_height(height as usize) {
-                    let p: &mut TxPartition =
+                    let p: &mut BtcPartition =
                         if let Some(partition) = partitioner.get_partition(height).await? {
                             partition
                         } else {
-                            let new_p = partitioner.add_partition(height, height + 100).await?;
+                            let new_p = partitioner
+                                .add_partition(height, BtcPartitionData::Tx)
+                                .await?;
                             new_p
                         };
                     println!("Block: {:?}, partition {}", block_id.hash, p.filename());
@@ -188,7 +187,8 @@ async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
                         txids.iter().for_each(|txid| {
                             hashes.push(txid.to_byte_array());
                         });
-                        p.write(height, hashes)?;
+                        let batch = tx_batch(height, hashes)?;
+                        p.write(batch)?;
                     }
                 } else {
                     println!("Block not found");
@@ -277,18 +277,9 @@ async fn main() {
     }
 }
 
-fn write_blocks(query: &Arc<ChainQuery>, start: u32, end: u32, path: &str) -> Result<()> {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("height", DataType::UInt32, false),
-        Field::new("hash", DataType::Binary, false),
-        Field::new("time", DataType::UInt32, false),
-        Field::new("size", DataType::UInt32, false),
-        Field::new("weight", DataType::UInt32, false),
-        Field::new("tx_count", DataType::UInt32, false),
-    ]));
-    let file = std::fs::File::create(path)?;
-    let props = WriterProperties::builder().build();
-    let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))?;
+async fn write_blocks(query: &Arc<ChainQuery>, start: u32, path: &str) -> Result<()> {
+    let client = CloudStorage::new()?;
+    let mut partitioner = Partitioner::load_partitions(&client, &path, &path, 100).await?;
 
     let mut heights = Vec::new();
     let mut hashes = Vec::new();
@@ -297,8 +288,14 @@ fn write_blocks(query: &Arc<ChainQuery>, start: u32, end: u32, path: &str) -> Re
     let mut weights = Vec::new();
     let mut tx_counts = Vec::new();
 
+    let p: &mut BtcPartition = partitioner
+        .add_partition(start, BtcPartitionData::Block)
+        .await?;
+
+    let max_height = query.best_height() as u32;
+
     let mut count = 0;
-    for height in start..end {
+    for height in start..max_height {
         if let Some(block_id) = query.blockid_by_height(height as usize) {
             if let Some(block_meta) = query.get_block_meta(&block_id.hash) {
                 if let Some(block_header) = query.get_block_header(&block_id.hash) {
@@ -315,20 +312,9 @@ fn write_blocks(query: &Arc<ChainQuery>, start: u32, end: u32, path: &str) -> Re
         }
     }
     println!("processed {} blocks", count);
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(UInt32Array::from(heights)) as ArrayRef,
-            Arc::new(BinaryArray::from(
-                hashes.iter().map(|h| &h[..]).collect::<Vec<_>>(),
-            )) as ArrayRef,
-            Arc::new(UInt32Array::from(times)) as ArrayRef,
-            Arc::new(UInt32Array::from(sizes)) as ArrayRef,
-            Arc::new(UInt32Array::from(weights)) as ArrayRef,
-            Arc::new(UInt32Array::from(tx_counts)) as ArrayRef,
-        ],
-    )?;
-    writer.write(&batch)?;
-    writer.close()?;
+
+    let batch = block_batch(heights, hashes, times, sizes, weights, tx_counts)?;
+    p.write(batch)?;
+    partitioner.close().await?;
     Ok(())
 }
