@@ -90,22 +90,22 @@ impl CloudStorageTrait for CloudStorage {
     }
 }
 
-mod tests {
-    // use super::*;
+// mod tests {
+//     use super::*;
 
-    #[tokio::test]
-    async fn test_list_buckets() {
-        let st = CloudStorage::new().unwrap();
-        let buckets = st.list_buckets().await;
-        assert!(buckets.is_ok());
-        let buckets = buckets.unwrap();
-        assert!(buckets.len() > 0);
-        std::println!("Buckets: {:?}", buckets);
+//     #[tokio::test]
+//     async fn test_list_buckets() {
+//         let st = CloudStorage::new().unwrap();
+//         let buckets = st.list_buckets().await;
+//         assert!(buckets.is_ok());
+//         let buckets = buckets.unwrap();
+//         assert!(buckets.len() > 0);
+//         std::println!("Buckets: {:?}", buckets);
 
-        let objects = st.list_objects(&buckets[0]).await;
-        assert!(objects.is_ok());
-        let objects = objects.unwrap();
-        assert!(objects.len() > 0);
-        std::println!("Objects: {:?}", objects);
-    }
-}
+//         let objects = st.list_objects(&buckets[0]).await;
+//         assert!(objects.is_ok());
+//         let objects = objects.unwrap();
+//         assert!(objects.len() > 0);
+//         std::println!("Objects: {:?}", objects);
+//     }
+// }

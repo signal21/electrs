@@ -23,6 +23,7 @@ pub struct TxPartition {
 pub struct Partitioner<'a> {
     partitions: Vec<TxPartition>,
     path: String,
+    bucket: String,
     work: Option<usize>,
     // partition_size: u32,
     storage: &'a dyn CloudStorageTrait,
@@ -112,13 +113,19 @@ impl TxPartition {
         Ok(res)
     }
 
-    pub async fn close(&mut self, storage: &dyn CloudStorageTrait) -> Result<()> {
+    pub fn delete_file(&self) -> Result<()> {
+        fs::remove_file(self.filename())?;
+        Ok(())
+    }
+
+    pub async fn close(&mut self, storage: &dyn CloudStorageTrait, bucket: &str) -> Result<()> {
         if let Some(writer) = self.writer.take() {
             writer.close()?;
             self.writer = None;
             storage
-                .upload_file(&self.path, &self.filename(), fs::read(self.filename())?)
+                .upload_file(bucket, &self.filename(), fs::read(self.filename())?)
                 .await?;
+            self.delete_file()?;
         }
         Ok(())
     }
@@ -127,6 +134,7 @@ impl TxPartition {
 impl<'a> Partitioner<'a> {
     pub async fn load_partitions(
         storage: &'a dyn CloudStorageTrait,
+        path: String,
         bucket: String,
         desired_size: u32,
     ) -> Result<Partitioner> {
@@ -134,7 +142,7 @@ impl<'a> Partitioner<'a> {
         let mut _actual_size = desired_size;
         let files = storage.list_objects(&bucket).await?;
         for file in files {
-            if let Some(partition) = TxPartition::from_filename(&bucket, &file) {
+            if let Some(partition) = TxPartition::from_filename(&path, &file) {
                 // actual_size = &partition.height_end - &partition.height_start;
                 partitions.push(partition);
             }
@@ -143,7 +151,8 @@ impl<'a> Partitioner<'a> {
         Ok(Partitioner {
             storage,
             partitions,
-            path: bucket,
+            path,
+            bucket,
             // partition_size: actual_size,
             work: None,
         })
@@ -152,7 +161,7 @@ impl<'a> Partitioner<'a> {
     pub async fn add_partition(&mut self, start: u32, end: u32) -> Result<&mut TxPartition> {
         if let Some(work) = self.work {
             if let Some(partition) = self.partitions.get_mut(work as usize) {
-                partition.close(self.storage).await?;
+                partition.close(self.storage, &self.bucket).await?;
             }
         }
         self.partitions.push(TxPartition {
@@ -174,7 +183,7 @@ impl<'a> Partitioner<'a> {
             if let Some(work) = self.work {
                 if work != i {
                     if let Some(partition) = self.partitions.get_mut(work as usize) {
-                        partition.close(self.storage).await?;
+                        partition.close(self.storage, &self.bucket).await?;
                     }
                 }
             }
@@ -191,7 +200,7 @@ impl<'a> Partitioner<'a> {
     pub async fn close(&mut self) -> Result<()> {
         if let Some(work) = self.work {
             if let Some(partition) = self.partitions.get_mut(work as usize) {
-                partition.close(self.storage).await?;
+                partition.close(self.storage, &self.bucket).await?;
             }
         }
         Ok(())
@@ -258,8 +267,8 @@ mod tests {
         let mut p = Partitioner {
             storage: &storage,
             path: "out".to_string(),
+            bucket: "bucket1".to_string(),
             partitions: Vec::new(),
-            partition_size: 100,
             work: None,
         };
         p.add_partition(0, 100).await.unwrap();
@@ -275,8 +284,8 @@ mod tests {
         let mut p = Partitioner {
             storage: &storage,
             path: "out".to_string(),
+            bucket: "bucket1".to_string(),
             partitions: Vec::new(),
-            partition_size: 100,
             work: None,
         };
         p.add_partition(0, 100).await.unwrap();
