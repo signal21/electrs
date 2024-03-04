@@ -41,6 +41,10 @@ impl BtcPartitionData {
             BtcPartitionData::Tx => Arc::new(Schema::new(vec![
                 Field::new("height", DataType::UInt32, false),
                 Field::new("hash", DataType::Binary, false),
+                Field::new("txins", DataType::UInt32, false),
+                Field::new("txouts", DataType::UInt32, false),
+                Field::new("size", DataType::UInt32, false),
+                Field::new("weight", DataType::UInt32, false),
             ])),
             BtcPartitionData::Block => Arc::new(Schema::new(vec![
                 Field::new("height", DataType::UInt32, false),
@@ -76,7 +80,14 @@ impl BtcPartitionData {
     }
 }
 
-pub fn tx_batch(height: u32, hashes: Vec<[u8; 32]>) -> Result<RecordBatch> {
+pub fn tx_batch(
+    height: u32,
+    hashes: Vec<[u8; 32]>,
+    txins: Vec<u32>,
+    txouts: Vec<u32>,
+    sizes: Vec<u32>,
+    weights: Vec<u32>,
+) -> Result<RecordBatch> {
     let schema = BtcPartitionData::Tx.schema();
     let batch = RecordBatch::try_new(
         schema,
@@ -85,6 +96,10 @@ pub fn tx_batch(height: u32, hashes: Vec<[u8; 32]>) -> Result<RecordBatch> {
             Arc::new(BinaryArray::from(
                 hashes.iter().map(|h| &h[..]).collect::<Vec<_>>(),
             )) as ArrayRef,
+            Arc::new(UInt32Array::from(txins)) as ArrayRef,
+            Arc::new(UInt32Array::from(txouts)) as ArrayRef,
+            Arc::new(UInt32Array::from(sizes)) as ArrayRef,
+            Arc::new(UInt32Array::from(weights)) as ArrayRef,
         ],
     )?;
     Ok(batch)

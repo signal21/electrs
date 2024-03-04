@@ -4,13 +4,8 @@ extern crate log;
 
 extern crate electrs;
 
-use arrow::{
-    array::{ArrayRef, BinaryArray, RecordBatch, UInt32Array},
-    datatypes::{DataType, Field, Schema},
-};
 use bitcoin::{hashes::Hash, Transaction, Txid};
 use error_chain::ChainedError;
-use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use rustyline::{error::ReadlineError, DefaultEditor};
 use std::process;
 use std::sync::Arc;
@@ -184,10 +179,23 @@ async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
                     println!("Block: {:?}, partition {}", block_id.hash, p.filename());
                     if let Some(txids) = query.get_block_txids(&block_id.hash) {
                         let mut hashes = Vec::new();
+                        let mut txins = Vec::new();
+                        let mut txouts = Vec::new();
+                        let mut sizes = Vec::new();
+                        let mut weights = Vec::<u32>::new();
                         txids.iter().for_each(|txid| {
                             hashes.push(txid.to_byte_array());
+                            if let Some(tx) = query.lookup_txn(txid, None) {
+                                txins.push(tx.input.len() as u32);
+                                txouts.push(tx.output.len() as u32);
+                                sizes.push(tx.vsize() as u32);
+                                let weight: u64 = tx.weight().into();
+                                weights.push(weight as u32);
+                            } else {
+                                println!("Tx not found: {}", txid);
+                            }
                         });
-                        let batch = tx_batch(height, hashes)?;
+                        let batch = tx_batch(height, hashes, txins, txouts, sizes, weights)?;
                         p.write(batch)?;
                     }
                 } else {
