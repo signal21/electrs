@@ -164,19 +164,16 @@ async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
             let end = cmds[2].parse::<u32>().chain_err(|| "Invalid tx height")?;
             let path = cmds[3].clone();
             let client = CloudStorage::new()?;
-            let mut partitioner = Partitioner::load_partitions(&client, &path, &path, 100).await?;
+            let mut partitioner =
+                Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Tx).await?;
             for height in start..end {
                 if let Some(block_id) = query.blockid_by_height(height as usize) {
-                    let p: &mut BtcPartition =
-                        if let Some(partition) = partitioner.get_partition(height).await? {
-                            partition
-                        } else {
-                            let new_p = partitioner
-                                .add_partition(height, BtcPartitionData::Tx)
-                                .await?;
-                            new_p
-                        };
-                    println!("Block: {:?}, partition {}", block_id.hash, p.filename());
+                    let work_partition = partitioner.work_partition_for_height(height).await?;
+                    println!(
+                        "Block: {:?}, partition {}",
+                        block_id.hash,
+                        work_partition.filename()
+                    );
                     if let Some(txids) = query.get_block_txids(&block_id.hash) {
                         let mut hashes = Vec::new();
                         let mut txins = Vec::new();
@@ -196,18 +193,19 @@ async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
                             }
                         });
                         let batch = tx_batch(height, hashes, txins, txouts, sizes, weights)?;
-                        p.write(batch)?;
+                        work_partition.write(batch)?;
                     }
                 } else {
                     println!("Block not found");
                 }
             }
-            partitioner.close().await?;
+            partitioner.close_work_partition().await?;
         }
         _ => println!("Unknown command: {}", cmds[0]),
     }
     Ok(())
 }
+
 
 async fn run_script(config: Arc<Config>) -> Result<()> {
     let signal: Waiter = Waiter::start();
@@ -287,7 +285,8 @@ async fn main() {
 
 async fn write_blocks(query: &Arc<ChainQuery>, start: u32, path: &str) -> Result<()> {
     let client = CloudStorage::new()?;
-    let mut partitioner = Partitioner::load_partitions(&client, &path, &path, 100).await?;
+    let mut partitioner =
+        Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Block).await?;
 
     let mut heights = Vec::new();
     let mut hashes = Vec::new();
@@ -296,9 +295,7 @@ async fn write_blocks(query: &Arc<ChainQuery>, start: u32, path: &str) -> Result
     let mut weights = Vec::new();
     let mut tx_counts = Vec::new();
 
-    let p: &mut BtcPartition = partitioner
-        .add_partition(start, BtcPartitionData::Block)
-        .await?;
+    let p: &mut BtcPartition = partitioner.work_partition_for_height(start).await?;
 
     let max_height = query.best_height() as u32;
 
@@ -323,6 +320,6 @@ async fn write_blocks(query: &Arc<ChainQuery>, start: u32, path: &str) -> Result
 
     let batch = block_batch(heights, hashes, times, sizes, weights, tx_counts)?;
     p.write(batch)?;
-    partitioner.close().await?;
+    partitioner.close_work_partition().await?;
     Ok(())
 }

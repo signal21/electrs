@@ -25,11 +25,12 @@ pub struct Partitioner<'a> {
     partitions: Vec<BtcPartition>,
     path: String,
     bucket: String,
-    work: Option<usize>,
-    // partition_size: u32,
     storage: &'a dyn CloudStorageTrait,
+    partition_info: BtcPartitionData,
+    work_partition: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum BtcPartitionData {
     Tx,
     Block,
@@ -212,13 +213,16 @@ impl<'a> Partitioner<'a> {
         storage: &'a dyn CloudStorageTrait,
         path: &str,
         bucket: &str,
-        desired_size: u32,
+        partition_info: BtcPartitionData,
     ) -> Result<Partitioner<'a>> {
         let mut partitions = Vec::new();
-        let mut _actual_size = desired_size;
+        let mut _actual_size = partition_info.partition_size() as u32;
         let files = storage.list_objects(&bucket).await?;
         for file in files {
             if let Some(partition) = BtcPartition::from_filename(&path, &file) {
+                if partition.info != partition_info {
+                    continue;
+                }
                 // actual_size = &partition.height_end - &partition.height_start;
                 partitions.push(partition);
             }
@@ -229,67 +233,80 @@ impl<'a> Partitioner<'a> {
             partitions,
             path: path.to_string(),
             bucket: bucket.to_string(),
-            // partition_size: actual_size,
-            work: None,
+            partition_info,
+            work_partition: None,
         })
     }
 
-    pub async fn add_partition(
-        &mut self,
-        start: u32,
-        info: BtcPartitionData,
-    ) -> Result<&mut BtcPartition> {
-        let existing = self.get_partition(start).await?;
+    pub async fn add_partition(&mut self, start: u32) -> Result<(usize, &mut BtcPartition)> {
+        let existing = self.find_partition(start);
         if let Some(_) = existing {
             return Err("Partition already exists".into());
         }
-        let end = start + info.partition_size() as u32;
-        if let Some(work) = self.work {
-            if let Some(partition) = self.partitions.get_mut(work as usize) {
-                partition.close(self.storage, &self.bucket).await?;
-            }
-        }
+        let end = start + self.partition_info.partition_size() as u32;
+
+        self.close_work_partition().await?;
+
+        // TODO: must ensure that the order of partitions is maintained
         self.partitions.push(BtcPartition {
             height_start: start,
             height_end: end,
             writer: None,
             path: self.path.clone(),
-            info,
+            info: self.partition_info.clone(),
         });
-        self.work = Some(self.partitions.len() - 1);
-        Ok(self.partitions.last_mut().unwrap())
+
+        let pos = self.partitions.len() - 1;
+        self.work_partition = Some(pos);
+
+        Ok((pos, self.partitions.last_mut().unwrap()))
     }
 
-    pub async fn get_partition(&mut self, height: u32) -> Result<Option<&mut BtcPartition>> {
-        let x = self
-            .partitions
+    pub fn find_partition(&self, height: u32) -> Option<(usize, &BtcPartition)> {
+        self.partitions
             .iter()
-            .find_position(|p| p.height_start <= height && p.height_end > height);
-        if let Some((i, _)) = x {
-            if let Some(work) = self.work {
-                if work != i {
-                    if let Some(partition) = self.partitions.get_mut(work as usize) {
-                        partition.close(self.storage, &self.bucket).await?;
-                    }
-                }
-            }
-            Ok(Some(&mut self.partitions[i]))
-        } else {
-            Ok(None)
+            .find_position(|p| p.height_start <= height && p.height_end > height)
+    }
+
+    pub async fn get_partition_by_index(&self, index: usize) -> Result<&BtcPartition> {
+        if index >= self.partitions.len() {
+            return Err("Index out of bounds".into());
         }
+        Ok(&self.partitions[index])
+    }
+
+    fn get_partition_by_index_mut(&mut self, index: usize) -> Result<&mut BtcPartition> {
+        if index >= self.partitions.len() {
+            return Err("Index out of bounds".into());
+        }
+        Ok(self.partitions.get_mut(index).unwrap())
+    }
+
+    pub async fn close_work_partition(&mut self) -> Result<()> {
+        if let Some(index) = self.work_partition {
+            let storage = self.storage;
+            let bucket = self.bucket.clone();
+            let partition = self.get_partition_by_index_mut(index)?;
+            partition.close(storage, &bucket).await?;
+        }
+        Ok(())
     }
 
     pub fn last_partition(&self) -> Option<&BtcPartition> {
         self.partitions.last()
     }
 
-    pub async fn close(&mut self) -> Result<()> {
-        if let Some(work) = self.work {
-            if let Some(partition) = self.partitions.get_mut(work as usize) {
-                partition.close(self.storage, &self.bucket).await?;
+    pub async fn work_partition_for_height(&mut self, height: u32) -> Result<&mut BtcPartition> {
+        if let Some(index) = self.work_partition {
+            if self.partitions[index].height_start <= height
+                && self.partitions[index].height_end > height
+            {
+                return Ok(self.get_partition_by_index_mut(index)?);
             }
         }
-        Ok(())
+        self.close_work_partition().await?;
+        let (_index, partition) = self.add_partition(height).await?;
+        Ok(partition)
     }
 }
 
@@ -358,18 +375,24 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_partitioner() {
-        let storage = FakeStorage {};
-        let mut p = Partitioner {
-            storage: &storage,
+    const STORAGE: FakeStorage = FakeStorage {};
+
+    fn create_partitioner() -> Partitioner<'static> {
+        Partitioner {
+            storage: &STORAGE,
             path: "out".to_string(),
             bucket: "bucket1".to_string(),
             partitions: Vec::new(),
-            work: None,
-        };
-        p.add_partition(0, BtcPartitionData::Tx).await.unwrap();
-        let part = p.get_partition(50).await.unwrap().unwrap();
+            partition_info: BtcPartitionData::Tx,
+            work_partition: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_partitioner() {
+        let mut p = create_partitioner();
+        p.add_partition(0).await.unwrap();
+        let (_, part) = p.find_partition(50).unwrap();
         assert_eq!(part.height_start, 0);
         assert_eq!(part.height_end, 1000);
         assert_eq!(part.filename(), "out/txs_0_1000.parquet");
@@ -377,17 +400,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_partitioner_add_partition() {
-        let storage = FakeStorage {};
-        let mut p = Partitioner {
-            storage: &storage,
-            path: "out".to_string(),
-            bucket: "bucket1".to_string(),
-            partitions: Vec::new(),
-            work: None,
-        };
-        p.add_partition(0, BtcPartitionData::Tx).await.unwrap();
-        p.add_partition(1000, BtcPartitionData::Tx).await.unwrap();
-        let part = p.get_partition(1500).await.unwrap().unwrap();
+        let mut p = create_partitioner();
+        p.add_partition(0).await.unwrap();
+        p.add_partition(1000).await.unwrap();
+        let (_, part) = p.find_partition(1500).unwrap();
         assert_eq!(part.height_start, 1000);
         assert_eq!(part.height_end, 2000);
         assert_eq!(part.filename(), "out/txs_1000_2000.parquet");
@@ -396,16 +412,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_partitioner_add_existing_partition() {
-        let storage = FakeStorage {};
-        let mut p = Partitioner {
-            storage: &storage,
-            path: "out".to_string(),
-            bucket: "bucket1".to_string(),
-            partitions: Vec::new(),
-            work: None,
-        };
-        p.add_partition(0, BtcPartitionData::Tx).await.unwrap();
-        let res = p.add_partition(100, BtcPartitionData::Tx).await;
+        let mut p = create_partitioner();
+        p.add_partition(0).await.unwrap();
+        let res = p.add_partition(100).await;
         assert!(res.is_err());
     }
 }
