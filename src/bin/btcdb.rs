@@ -239,6 +239,7 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
                 }
             }
             partitioner.close_work_partition().await?;
+            out_partitioner.close_work_partition().await?;
         }
         _ => println!("Unknown command: {}", cmds[0]),
     }
