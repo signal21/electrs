@@ -20,7 +20,10 @@ use electrs::{
     new_index::{compute_script_hash, ChainQuery, Store},
     signal::Waiter,
     util::{
-        partitions::{block_batch, tx_batch, BtcPartition, BtcPartitionData, Partitioner},
+        has_prevout,
+        partitions::{
+            block_batch, output_batch, tx_batch, BtcPartition, BtcPartitionData, Partitioner,
+        },
         s3::CloudStorage,
     },
 };
@@ -53,7 +56,7 @@ fn split_line_to_cmds(line: &str) -> Vec<String> {
     cmds
 }
 
-async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
+async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) -> Result<()> {
     let cmds = split_line_to_cmds(line);
     if cmds.is_empty() {
         return Ok(());
@@ -166,9 +169,14 @@ async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
             let client = CloudStorage::new()?;
             let mut partitioner =
                 Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Tx).await?;
+            let mut out_partitioner =
+                Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Output)
+                    .await?;
             for height in start..end {
                 if let Some(block_id) = query.blockid_by_height(height as usize) {
                     let work_partition = partitioner.work_partition_for_height(height).await?;
+                    let out_work_partition =
+                        out_partitioner.work_partition_for_height(height).await?;
                     println!(
                         "Block: {:?}, partition {}",
                         block_id.hash,
@@ -176,24 +184,55 @@ async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
                     );
                     if let Some(txids) = query.get_block_txids(&block_id.hash) {
                         let mut hashes = Vec::new();
-                        let mut txins = Vec::new();
-                        let mut txouts = Vec::new();
-                        let mut sizes = Vec::new();
+                        let mut in_total_sats = Vec::new();
+                        let mut out_total_sats = Vec::new();
+                        let mut raws = Vec::new();
                         let mut weights = Vec::<u32>::new();
+
+                        let mut out_txids = Vec::new();
+                        let mut out_vouts = Vec::new();
+                        let mut out_values = Vec::new();
+                        let mut out_scripts = Vec::new();
+                        let mut out_addresses = Vec::new();
+
                         txids.iter().for_each(|txid| {
                             hashes.push(txid.to_byte_array());
-                            if let Some(tx) = query.lookup_txn(txid, None) {
-                                txins.push(tx.input.len() as u32);
-                                txouts.push(tx.output.len() as u32);
-                                sizes.push(tx.vsize() as u32);
+                            if let Some(raw) = query.lookup_raw_txn(txid, None) {
+                                let tx = deserialize(&raw).expect("failed to parse Transaction");
+                                in_total_sats.push(total_ins(query, &tx));
+                                out_total_sats
+                                    .push(tx.output.iter().map(|o| o.value.to_sat()).sum());
+                                raws.push(raw);
                                 let weight: u64 = tx.weight().into();
                                 weights.push(weight as u32);
+
+                                for (vout, out) in tx.output.iter().enumerate() {
+                                    let addr = bitcoin::Address::from_script(
+                                        &out.script_pubkey,
+                                        config.network_type.into(),
+                                    )
+                                    .ok();
+                                    out_scripts.push(out.script_pubkey.to_bytes());
+                                    out_addresses.push(addr);
+                                    out_txids.push(txid.to_byte_array());
+                                    out_vouts.push(vout as u32);
+                                    out_values.push(out.value.to_sat());
+                                }
                             } else {
                                 println!("Tx not found: {}", txid);
                             }
                         });
-                        let batch = tx_batch(height, hashes, txins, txouts, sizes, weights)?;
+                        let batch =
+                            tx_batch(height, hashes, in_total_sats, out_total_sats, raws, weights)?;
                         work_partition.write(batch)?;
+                        let out_batch = output_batch(
+                            out_txids,
+                            out_vouts,
+                            out_values,
+                            out_scripts,
+                            out_addresses,
+                        )?;
+                        out_work_partition.write(out_batch)?;
                     }
                 } else {
                     println!("Block not found");
@@ -206,6 +245,16 @@ async fn switch_line(line: &str, query: &Arc<ChainQuery>) -> Result<()> {
     Ok(())
 }
 
+fn total_ins(query: &Arc<ChainQuery>, tx: &Transaction) -> u64 {
+    let prevouts = query.lookup_txos(
+        &tx.input
+            .iter()
+            .filter(|txin| has_prevout(txin))
+            .map(|txin| txin.previous_output)
+            .collect(),
+    );
+    prevouts.values().map(|out| out.value.to_sat()).sum()
+}
 
 async fn run_script(config: Arc<Config>) -> Result<()> {
     let signal: Waiter = Waiter::start();
@@ -241,7 +290,7 @@ async fn run_script(config: Arc<Config>) -> Result<()> {
         match rl.readline(">> ") {
             Ok(line) => {
                 println!("Line: {}", line);
-                match switch_line(line.as_str(), &chain).await {
+                match switch_line(line.as_str(), &config, &chain).await {
                     Ok(_) => {
                         rl.add_history_entry(line.as_str())?;
                     }

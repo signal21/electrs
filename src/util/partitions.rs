@@ -5,11 +5,12 @@ use std::{
 
 use crate::errors::*;
 use arrow::{
-    array::{ArrayRef, BinaryArray, RecordBatch, UInt32Array},
+    array::{ArrayRef, BinaryArray, RecordBatch, StringArray, UInt32Array, UInt64Array},
     datatypes::{DataType, Field, Schema},
 };
+use bitcoin::Address;
 use itertools::Itertools;
-use parquet::arrow::ArrowWriter;
+use parquet::{arrow::ArrowWriter, data_type::AsBytes};
 
 use super::s3::CloudStorageTrait;
 
@@ -33,6 +34,8 @@ pub struct Partitioner<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BtcPartitionData {
     Tx,
+    Output,
+    Input,
     Block,
 }
 
@@ -40,16 +43,41 @@ impl BtcPartitionData {
     pub fn schema(&self) -> Arc<Schema> {
         match self {
             BtcPartitionData::Tx => Arc::new(Schema::new(vec![
+                /* primary key */
+                Field::new("txid", DataType::Binary, false),
+                /* rest */
                 Field::new("height", DataType::UInt32, false),
-                Field::new("hash", DataType::Binary, false),
-                Field::new("txins", DataType::UInt32, false),
-                Field::new("txouts", DataType::UInt32, false),
-                Field::new("size", DataType::UInt32, false),
+                /* transaction debit/credit */
+                Field::new("in_total_sats", DataType::UInt64, false),
+                Field::new("out_total_sats", DataType::UInt64, false),
+                /* raw transaction content */
+                Field::new("raw", DataType::Binary, false),
                 Field::new("weight", DataType::UInt32, false),
             ])),
+            BtcPartitionData::Output => Arc::new(Schema::new(vec![
+                /* primary key */
+                Field::new("txid", DataType::Binary, false),
+                Field::new("vout", DataType::UInt32, false),
+                /* rest */
+                Field::new("value", DataType::UInt64, false),
+                Field::new("script", DataType::Binary, false),
+                Field::new("address", DataType::Utf8, false),
+                Field::new("address_type", DataType::Utf8, false),
+            ])),
+            BtcPartitionData::Input => Arc::new(Schema::new(vec![
+                /* primary key */
+                Field::new("txid", DataType::Binary, false),
+                Field::new("vin", DataType::UInt32, false),
+                /* reference to output */
+                Field::new("prev_txid", DataType::Binary, false),
+                Field::new("prev_vin", DataType::UInt32, false),
+                Field::new("is_coinbase", DataType::Boolean, false),
+            ])),
             BtcPartitionData::Block => Arc::new(Schema::new(vec![
-                Field::new("height", DataType::UInt32, false),
+                /* primary key */
                 Field::new("hash", DataType::Binary, false),
+                /* rest */
+                Field::new("height", DataType::UInt32, false),
                 Field::new("time", DataType::UInt32, false),
                 Field::new("size", DataType::UInt32, false),
                 Field::new("weight", DataType::UInt32, false),
@@ -61,6 +89,8 @@ impl BtcPartitionData {
     pub fn partition_size(&self) -> usize {
         match self {
             BtcPartitionData::Tx => 1000,
+            BtcPartitionData::Output => 1000,
+            BtcPartitionData::Input => 1000,
             BtcPartitionData::Block => 10_000_000,
         }
     }
@@ -68,6 +98,8 @@ impl BtcPartitionData {
     pub fn prefix(&self) -> &'static str {
         match self {
             BtcPartitionData::Tx => "txs",
+            BtcPartitionData::Output => "outs",
+            BtcPartitionData::Input => "ins",
             BtcPartitionData::Block => "blocks",
         }
     }
@@ -75,6 +107,8 @@ impl BtcPartitionData {
     pub fn from_prefix(prefix: &str) -> Option<BtcPartitionData> {
         match prefix {
             "txs" => Some(BtcPartitionData::Tx),
+            "outs" => Some(BtcPartitionData::Output),
+            "ins" => Some(BtcPartitionData::Input),
             "blocks" => Some(BtcPartitionData::Block),
             _ => None,
         }
@@ -84,9 +118,9 @@ impl BtcPartitionData {
 pub fn tx_batch(
     height: u32,
     hashes: Vec<[u8; 32]>,
-    txins: Vec<u32>,
-    txouts: Vec<u32>,
-    sizes: Vec<u32>,
+    in_total_sats: Vec<u64>,
+    out_total_sats: Vec<u64>,
+    raws: Vec<Vec<u8>>,
     weights: Vec<u32>,
 ) -> Result<RecordBatch> {
     let schema = BtcPartitionData::Tx.schema();
@@ -97,10 +131,59 @@ pub fn tx_batch(
             Arc::new(BinaryArray::from(
                 hashes.iter().map(|h| &h[..]).collect::<Vec<_>>(),
             )) as ArrayRef,
-            Arc::new(UInt32Array::from(txins)) as ArrayRef,
-            Arc::new(UInt32Array::from(txouts)) as ArrayRef,
-            Arc::new(UInt32Array::from(sizes)) as ArrayRef,
+            Arc::new(UInt64Array::from(in_total_sats)) as ArrayRef,
+            Arc::new(UInt64Array::from(out_total_sats)) as ArrayRef,
+            Arc::new(BinaryArray::from_vec(
+                raws.iter().map(|v| v.as_bytes()).collect(),
+            )) as ArrayRef,
             Arc::new(UInt32Array::from(weights)) as ArrayRef,
+        ],
+    )?;
+    Ok(batch)
+}
+
+pub fn output_batch(
+    txids: Vec<[u8; 32]>,
+    vouts: Vec<u32>,
+    values: Vec<u64>,
+    scripts: Vec<Vec<u8>>,
+    addresses: Vec<Option<Address>>,
+) -> Result<RecordBatch> {
+    let schema = BtcPartitionData::Output.schema();
+    let address_types = addresses
+        .iter()
+        .map(|addr| {
+            if let Some(addr_type) = addr.as_ref().and_then(|a| a.address_type()) {
+                addr_type.to_string()
+            } else {
+                "".to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(BinaryArray::from(
+                txids.iter().map(|h| &h[..]).collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(UInt32Array::from(vouts)) as ArrayRef,
+            Arc::new(UInt64Array::from(values)) as ArrayRef,
+            Arc::new(BinaryArray::from(
+                scripts.iter().map(|s| s.as_bytes()).collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(StringArray::from(
+                addresses
+                    .iter()
+                    .map(|s| {
+                        if let Some(a) = s {
+                            a.to_string()
+                        } else {
+                            "".to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(StringArray::from(address_types)) as ArrayRef,
         ],
     )?;
     Ok(batch)
