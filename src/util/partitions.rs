@@ -5,7 +5,10 @@ use std::{
 
 use crate::errors::*;
 use arrow::{
-    array::{ArrayRef, BinaryArray, RecordBatch, StringArray, UInt32Array, UInt64Array},
+    array::{
+        ArrayRef, BinaryArray, BooleanArray, ListArray, MapArray, RecordBatch, StringArray,
+        UInt32Array, UInt64Array,
+    },
     datatypes::{DataType, Field, Schema},
 };
 use bitcoin::Address;
@@ -72,6 +75,12 @@ impl BtcPartitionData {
                 Field::new("prev_txid", DataType::Binary, false),
                 Field::new("prev_vin", DataType::UInt32, false),
                 Field::new("is_coinbase", DataType::Boolean, false),
+                Field::new("script_sig", DataType::Binary, false),
+                Field::new(
+                    "witnesses",
+                    DataType::List(Arc::new(Field::new("witness", DataType::Binary, false))),
+                    false,
+                ),
             ])),
             BtcPartitionData::Block => Arc::new(Schema::new(vec![
                 /* primary key */
@@ -184,6 +193,46 @@ pub fn output_batch(
                     .collect::<Vec<_>>(),
             )) as ArrayRef,
             Arc::new(StringArray::from(address_types)) as ArrayRef,
+        ],
+    )?;
+    Ok(batch)
+}
+
+pub fn input_batch(
+    txids: Vec<[u8; 32]>,
+    vins: Vec<u32>,
+    prev_txids: Vec<[u8; 32]>,
+    prev_vins: Vec<u32>,
+    is_coinbases: Vec<bool>,
+    script_sigs: Vec<Vec<u8>>,
+    witnesses: Vec<Vec<Vec<u8>>>,
+) -> Result<RecordBatch> {
+    let schema = BtcPartitionData::Input.schema();
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(BinaryArray::from(
+                txids.iter().map(|h| &h[..]).collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(UInt32Array::from(vins)) as ArrayRef,
+            Arc::new(BinaryArray::from(
+                prev_txids.iter().map(|h| &h[..]).collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(UInt32Array::from(prev_vins)) as ArrayRef,
+            Arc::new(BooleanArray::from(is_coinbases)) as ArrayRef,
+            Arc::new(BinaryArray::from(
+                script_sigs.iter().map(|s| s.as_bytes()).collect::<Vec<_>>(),
+            )) as ArrayRef,
+            // Arc::new(MapArray::from(
+            //     witnesses
+            //         .iter()
+            //         .map(|w| {
+            //             Arc::new(BinaryArray::from(
+            //                 w.iter().map(|s| s.as_bytes()).collect::<Vec<_>>(),
+            //             )) as ArrayRef
+            //         })
+            //         .collect::<Vec<_>>(),
+            // )) as ArrayRef,
         ],
     )?;
     Ok(batch)
