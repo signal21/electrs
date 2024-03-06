@@ -136,10 +136,10 @@ pub fn tx_batch(
     let batch = RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(UInt32Array::from(vec![height; hashes.len()])) as ArrayRef,
             Arc::new(BinaryArray::from(
                 hashes.iter().map(|h| &h[..]).collect::<Vec<_>>(),
             )) as ArrayRef,
+            Arc::new(UInt32Array::from(vec![height; hashes.len()])) as ArrayRef,
             Arc::new(UInt64Array::from(in_total_sats)) as ArrayRef,
             Arc::new(UInt64Array::from(out_total_sats)) as ArrayRef,
             Arc::new(BinaryArray::from_vec(
