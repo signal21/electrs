@@ -6,10 +6,10 @@ use std::{
 use crate::errors::*;
 use arrow::{
     array::{
-        ArrayRef, BinaryArray, BooleanArray, ListArray, MapArray, RecordBatch, StringArray,
-        UInt32Array, UInt64Array,
+        ArrayRef, BinaryArray, BinaryBuilder, BooleanArray, ListArray, ListBuilder, MapArray,
+        PrimitiveArray, RecordBatch, StringArray, UInt32Array, UInt64Array,
     },
-    datatypes::{DataType, Field, Schema},
+    datatypes::{DataType, Field, Int32Type, Schema},
 };
 use bitcoin::Address;
 use itertools::Itertools;
@@ -73,12 +73,12 @@ impl BtcPartitionData {
                 Field::new("vin", DataType::UInt32, false),
                 /* reference to output */
                 Field::new("prev_txid", DataType::Binary, false),
-                Field::new("prev_vin", DataType::UInt32, false),
+                Field::new("prev_vout", DataType::UInt32, false),
                 Field::new("is_coinbase", DataType::Boolean, false),
                 Field::new("script_sig", DataType::Binary, false),
                 Field::new(
                     "witnesses",
-                    DataType::List(Arc::new(Field::new("witness", DataType::Binary, false))),
+                    DataType::List(Arc::new(Field::new("item", DataType::Binary, true))),
                     false,
                 ),
             ])),
@@ -202,12 +202,23 @@ pub fn input_batch(
     txids: Vec<[u8; 32]>,
     vins: Vec<u32>,
     prev_txids: Vec<[u8; 32]>,
-    prev_vins: Vec<u32>,
+    prev_vouts: Vec<u32>,
     is_coinbases: Vec<bool>,
     script_sigs: Vec<Vec<u8>>,
-    witnesses: Vec<Vec<Vec<u8>>>,
+    witnesses_group: Vec<Vec<Vec<u8>>>,
 ) -> Result<RecordBatch> {
     let schema = BtcPartitionData::Input.schema();
+    let mut witness_builder = ListBuilder::new(BinaryBuilder::new());
+
+    for witnesses in witnesses_group {
+        for w in &witnesses {
+            witness_builder.values().append_value(w.as_bytes());
+        }
+        witness_builder.append(true);
+    }
+
+    let witnesses = witness_builder.finish();
+
     let batch = RecordBatch::try_new(
         schema,
         vec![
@@ -218,11 +229,12 @@ pub fn input_batch(
             Arc::new(BinaryArray::from(
                 prev_txids.iter().map(|h| &h[..]).collect::<Vec<_>>(),
             )) as ArrayRef,
-            Arc::new(UInt32Array::from(prev_vins)) as ArrayRef,
+            Arc::new(UInt32Array::from(prev_vouts)) as ArrayRef,
             Arc::new(BooleanArray::from(is_coinbases)) as ArrayRef,
             Arc::new(BinaryArray::from(
                 script_sigs.iter().map(|s| s.as_bytes()).collect::<Vec<_>>(),
             )) as ArrayRef,
+            Arc::new(witnesses) as ArrayRef,
             // Arc::new(MapArray::from(
             //     witnesses
             //         .iter()
@@ -548,5 +560,35 @@ mod tests {
         p.add_partition(0).await.unwrap();
         let res = p.add_partition(100).await;
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_building_witnesses_group() {
+        let witnesses_group = vec![
+            vec![vec![1, 2, 3], vec![4, 5, 6]],
+            vec![vec![7, 8, 9], vec![10, 11, 12]],
+        ];
+        let batch = input_batch(
+            vec![[1; 32], [2; 32]],
+            vec![0, 1],
+            vec![[3; 32], [4; 32]],
+            vec![0, 1],
+            vec![true, false],
+            vec![[5; 32].to_vec(), [6; 32].to_vec()],
+            witnesses_group,
+        )
+        .unwrap();
+        assert_eq!(batch.num_columns(), 7);
+        assert_eq!(batch.num_rows(), 2);
+        assert_eq!(
+            batch
+                .column(6)
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap()
+                .value(0)
+                .len(),
+            2
+        );
     }
 }

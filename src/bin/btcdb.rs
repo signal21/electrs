@@ -20,7 +20,7 @@ use electrs::{
     new_index::{compute_script_hash, ChainQuery, Store},
     signal::Waiter,
     util::{
-        has_prevout,
+        has_prevout, is_coinbase,
         partitions::{
             block_batch, output_batch, tx_batch, BtcPartition, BtcPartitionData, Partitioner,
         },
@@ -172,11 +172,16 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
             let mut out_partitioner =
                 Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Output)
                     .await?;
+            let mut input_partitioner =
+                Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Input)
+                    .await?;
             for height in start..end {
                 if let Some(block_id) = query.blockid_by_height(height as usize) {
                     let work_partition = partitioner.work_partition_for_height(height).await?;
                     let out_work_partition =
                         out_partitioner.work_partition_for_height(height).await?;
+                    let input_partition =
+                        input_partitioner.work_partition_for_height(height).await?;
                     println!(
                         "Block: {:?}, partition {}",
                         block_id.hash,
@@ -194,6 +199,14 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
                         let mut out_values = Vec::new();
                         let mut out_scripts = Vec::new();
                         let mut out_addresses = Vec::new();
+
+                        let mut in_txids = Vec::new();
+                        let mut in_vins = Vec::new();
+                        let mut prev_txids = Vec::new();
+                        let mut prev_vouts = Vec::new();
+                        let mut is_coinbases = Vec::new();
+                        let mut script_sigs = Vec::new();
+                        let mut witnesses_group = Vec::new();
 
                         txids.iter().for_each(|txid| {
                             hashes.push(txid.to_byte_array());
@@ -217,6 +230,18 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
                                     out_txids.push(txid.to_byte_array());
                                     out_vouts.push(vout as u32);
                                     out_values.push(out.value.to_sat());
+                                }
+
+                                for (vin, txin) in tx.input.iter().enumerate() {
+                                    in_txids.push(txid.to_byte_array());
+                                    in_vins.push(vin as u32);
+                                    prev_txids.push(txin.previous_output.txid.to_byte_array());
+                                    prev_vouts.push(txin.previous_output.vout);
+                                    is_coinbases.push(is_coinbase(&txin));
+                                    script_sigs.push(txin.script_sig.to_bytes());
+                                    witnesses_group.push(
+                                        txin.witness.iter().map(|w| w.to_vec()).collect::<Vec<_>>(),
+                                    );
                                 }
                             } else {
                                 println!("Tx not found: {}", txid);
