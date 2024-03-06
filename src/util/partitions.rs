@@ -502,6 +502,11 @@ pub async fn process_partition(path: &str, start: u32, end: u32, work: Callback)
     let mut input_partitioner =
         Partitioner::load_partitions(&client, path, path, BtcPartitionData::Input).await?;
 
+    // force to create partition
+    let _ = partitioner.work_partition_for_height(start).await?;
+    let _ = out_partitioner.work_partition_for_height(start).await?;
+    let _ = input_partitioner.work_partition_for_height(start).await?;    
+
     for result in rx {
         match result {
             Ok(part) => {
