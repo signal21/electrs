@@ -22,7 +22,8 @@ use electrs::{
     util::{
         has_prevout, is_coinbase,
         partitions::{
-            block_batch, output_batch, tx_batch, BtcPartition, BtcPartitionData, Partitioner,
+            block_batch, input_batch, output_batch, tx_batch, BtcPartition, BtcPartitionData,
+            Partitioner,
         },
         s3::CloudStorage,
     },
@@ -258,6 +259,16 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
                             out_addresses,
                         )?;
                         out_work_partition.write(out_batch)?;
+                        let in_batch = input_batch(
+                            in_txids,
+                            in_vins,
+                            prev_txids,
+                            prev_vouts,
+                            is_coinbases,
+                            script_sigs,
+                            witnesses_group,
+                        )?;
+                        input_partition.write(in_batch)?;
                     }
                 } else {
                     println!("Block not found");
@@ -265,6 +276,7 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
             }
             partitioner.close_work_partition().await?;
             out_partitioner.close_work_partition().await?;
+            input_partitioner.close_work_partition().await?;
         }
         _ => println!("Unknown command: {}", cmds[0]),
     }

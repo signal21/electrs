@@ -235,16 +235,6 @@ pub fn input_batch(
                 script_sigs.iter().map(|s| s.as_bytes()).collect::<Vec<_>>(),
             )) as ArrayRef,
             Arc::new(witnesses) as ArrayRef,
-            // Arc::new(MapArray::from(
-            //     witnesses
-            //         .iter()
-            //         .map(|w| {
-            //             Arc::new(BinaryArray::from(
-            //                 w.iter().map(|s| s.as_bytes()).collect::<Vec<_>>(),
-            //             )) as ArrayRef
-            //         })
-            //         .collect::<Vec<_>>(),
-            // )) as ArrayRef,
         ],
     )?;
     Ok(batch)
