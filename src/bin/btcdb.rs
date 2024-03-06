@@ -22,8 +22,8 @@ use electrs::{
     util::{
         has_prevout, is_coinbase,
         partitions::{
-            block_batch, input_batch, output_batch, tx_batch, BtcPartition, BtcPartitionData,
-            Partitioner,
+            block_batch, input_batch, output_batch, process_partition, tx_batch, BtcPartition,
+            BtcPartitionData, PartitionWork, Partitioner,
         },
         s3::CloudStorage,
     },
@@ -57,7 +57,7 @@ fn split_line_to_cmds(line: &str) -> Vec<String> {
     cmds
 }
 
-async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) -> Result<()> {
+async fn switch_line(line: &str, config: Arc<Config>, query: Arc<ChainQuery>) -> Result<()> {
     let cmds = split_line_to_cmds(line);
     if cmds.is_empty() {
         return Ok(());
@@ -158,7 +158,7 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
                 .parse::<u32>()
                 .chain_err(|| "Invalid block height")?;
             let path = cmds[2].clone();
-            write_blocks(query, start, &path).await?;
+            write_blocks(&query, start, &path).await?;
         }
         "write-txs" => {
             if cmds.len() < 4 {
@@ -167,116 +167,112 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
             let start = cmds[1].parse::<u32>().chain_err(|| "Invalid tx height")?;
             let end = cmds[2].parse::<u32>().chain_err(|| "Invalid tx height")?;
             let path = cmds[3].clone();
-            let client = CloudStorage::new()?;
-            let mut partitioner =
-                Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Tx).await?;
-            let mut out_partitioner =
-                Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Output)
-                    .await?;
-            let mut input_partitioner =
-                Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Input)
-                    .await?;
-            for height in start..end {
-                if let Some(block_id) = query.blockid_by_height(height as usize) {
-                    let work_partition = partitioner.work_partition_for_height(height).await?;
-                    let out_work_partition =
-                        out_partitioner.work_partition_for_height(height).await?;
-                    let input_partition =
-                        input_partitioner.work_partition_for_height(height).await?;
-                    println!(
-                        "Block: {:?}, partition {}",
-                        block_id.hash,
-                        work_partition.filename()
-                    );
-                    if let Some(txids) = query.get_block_txids(&block_id.hash) {
-                        let mut hashes = Vec::new();
-                        let mut in_total_sats = Vec::new();
-                        let mut out_total_sats = Vec::new();
-                        let mut raws = Vec::new();
-                        let mut weights = Vec::<u32>::new();
 
-                        let mut out_txids = Vec::new();
-                        let mut out_vouts = Vec::new();
-                        let mut out_values = Vec::new();
-                        let mut out_scripts = Vec::new();
-                        let mut out_addresses = Vec::new();
+            process_partition(
+                &path,
+                start,
+                end,
+                Arc::new(move |height| {
+                    if let Some(block_id) = query.blockid_by_height(height as usize) {
+                        println!("Block: {:?}, height: {}", block_id.hash, block_id.height);
+                        if let Some(txids) = query.get_block_txids(&block_id.hash) {
+                            let mut hashes = Vec::new();
+                            let mut in_total_sats = Vec::new();
+                            let mut out_total_sats = Vec::new();
+                            let mut raws = Vec::new();
+                            let mut weights = Vec::<u32>::new();
 
-                        let mut in_txids = Vec::new();
-                        let mut in_vins = Vec::new();
-                        let mut prev_txids = Vec::new();
-                        let mut prev_vouts = Vec::new();
-                        let mut is_coinbases = Vec::new();
-                        let mut script_sigs = Vec::new();
-                        let mut witnesses_group = Vec::new();
+                            let mut out_txids = Vec::new();
+                            let mut out_vouts = Vec::new();
+                            let mut out_values = Vec::new();
+                            let mut out_scripts = Vec::new();
+                            let mut out_addresses = Vec::new();
 
-                        txids.iter().for_each(|txid| {
-                            hashes.push(txid.to_byte_array());
-                            if let Some(raw) = query.lookup_raw_txn(txid, None) {
-                                let tx = deserialize(&raw).expect("failed to parse Transaction");
-                                in_total_sats.push(total_ins(query, &tx));
-                                out_total_sats
-                                    .push(tx.output.iter().map(|o| o.value.to_sat()).sum());
-                                raws.push(raw);
-                                let weight: u64 = tx.weight().into();
-                                weights.push(weight as u32);
+                            let mut in_txids = Vec::new();
+                            let mut in_vins = Vec::new();
+                            let mut prev_txids = Vec::new();
+                            let mut prev_vouts = Vec::new();
+                            let mut is_coinbases = Vec::new();
+                            let mut script_sigs = Vec::new();
+                            let mut witnesses_group = Vec::new();
 
-                                for (vout, out) in tx.output.iter().enumerate() {
-                                    let addr = bitcoin::Address::from_script(
-                                        &out.script_pubkey,
-                                        config.network_type.into(),
-                                    )
-                                    .ok();
-                                    out_scripts.push(out.script_pubkey.to_bytes());
-                                    out_addresses.push(addr);
-                                    out_txids.push(txid.to_byte_array());
-                                    out_vouts.push(vout as u32);
-                                    out_values.push(out.value.to_sat());
+                            txids.iter().for_each(|txid| {
+                                hashes.push(txid.to_byte_array());
+                                if let Some(raw) = query.lookup_raw_txn(txid, None) {
+                                    let tx =
+                                        deserialize(&raw).expect("failed to parse Transaction");
+                                    in_total_sats.push(total_ins(&query, &tx));
+                                    out_total_sats
+                                        .push(tx.output.iter().map(|o| o.value.to_sat()).sum());
+                                    raws.push(raw);
+                                    let weight: u64 = tx.weight().into();
+                                    weights.push(weight as u32);
+
+                                    for (vout, out) in tx.output.iter().enumerate() {
+                                        let addr = bitcoin::Address::from_script(
+                                            &out.script_pubkey,
+                                            config.network_type.into(),
+                                        )
+                                        .ok();
+                                        out_scripts.push(out.script_pubkey.to_bytes());
+                                        out_addresses.push(addr);
+                                        out_txids.push(txid.to_byte_array());
+                                        out_vouts.push(vout as u32);
+                                        out_values.push(out.value.to_sat());
+                                    }
+
+                                    for (vin, txin) in tx.input.iter().enumerate() {
+                                        in_txids.push(txid.to_byte_array());
+                                        in_vins.push(vin as u32);
+                                        prev_txids.push(txin.previous_output.txid.to_byte_array());
+                                        prev_vouts.push(txin.previous_output.vout);
+                                        is_coinbases.push(is_coinbase(&txin));
+                                        script_sigs.push(txin.script_sig.to_bytes());
+                                        witnesses_group.push(
+                                            txin.witness
+                                                .iter()
+                                                .map(|w| w.to_vec())
+                                                .collect::<Vec<_>>(),
+                                        );
+                                    }
+                                } else {
+                                    println!("Tx not found: {}", txid);
                                 }
-
-                                for (vin, txin) in tx.input.iter().enumerate() {
-                                    in_txids.push(txid.to_byte_array());
-                                    in_vins.push(vin as u32);
-                                    prev_txids.push(txin.previous_output.txid.to_byte_array());
-                                    prev_vouts.push(txin.previous_output.vout);
-                                    is_coinbases.push(is_coinbase(&txin));
-                                    script_sigs.push(txin.script_sig.to_bytes());
-                                    witnesses_group.push(
-                                        txin.witness.iter().map(|w| w.to_vec()).collect::<Vec<_>>(),
-                                    );
-                                }
-                            } else {
-                                println!("Tx not found: {}", txid);
-                            }
-                        });
-                        let batch =
-                            tx_batch(height, hashes, in_total_sats, out_total_sats, raws, weights)?;
-                        work_partition.write(batch)?;
-                        let out_batch = output_batch(
-                            out_txids,
-                            out_vouts,
-                            out_values,
-                            out_scripts,
-                            out_addresses,
-                        )?;
-                        out_work_partition.write(out_batch)?;
-                        let in_batch = input_batch(
-                            in_txids,
-                            in_vins,
-                            prev_txids,
-                            prev_vouts,
-                            is_coinbases,
-                            script_sigs,
-                            witnesses_group,
-                        )?;
-                        input_partition.write(in_batch)?;
+                            });
+                            let batch = tx_batch(
+                                height,
+                                hashes,
+                                in_total_sats,
+                                out_total_sats,
+                                raws,
+                                weights,
+                            )?;
+                            let out_batch = output_batch(
+                                out_txids,
+                                out_vouts,
+                                out_values,
+                                out_scripts,
+                                out_addresses,
+                            )?;
+                            let in_batch = input_batch(
+                                in_txids,
+                                in_vins,
+                                prev_txids,
+                                prev_vouts,
+                                is_coinbases,
+                                script_sigs,
+                                witnesses_group,
+                            )?;
+                            Ok(PartitionWork::new(height, batch, out_batch, in_batch))
+                        } else {
+                            Err("Block not found".into())
+                        }
+                    } else {
+                        Err("Block not found".into())
                     }
-                } else {
-                    println!("Block not found");
-                }
-            }
-            partitioner.close_work_partition().await?;
-            out_partitioner.close_work_partition().await?;
-            input_partitioner.close_work_partition().await?;
+                }),
+            )
+            .await?;
         }
         _ => println!("Unknown command: {}", cmds[0]),
     }
@@ -328,7 +324,7 @@ async fn run_script(config: Arc<Config>) -> Result<()> {
         match rl.readline(">> ") {
             Ok(line) => {
                 println!("Line: {}", line);
-                match switch_line(line.as_str(), &config, &chain).await {
+                match switch_line(line.as_str(), config.clone(), chain.clone()).await {
                     Ok(_) => {
                         rl.add_history_entry(line.as_str())?;
                     }

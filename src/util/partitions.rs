@@ -1,21 +1,22 @@
 use std::{
     fs::{self, File, OpenOptions},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use crate::errors::*;
 use arrow::{
     array::{
-        ArrayRef, BinaryArray, BinaryBuilder, BooleanArray, ListArray, ListBuilder, MapArray,
-        PrimitiveArray, RecordBatch, StringArray, UInt32Array, UInt64Array,
+        ArrayRef, BinaryArray, BinaryBuilder, BooleanArray, ListBuilder, RecordBatch, StringArray,
+        UInt32Array, UInt64Array,
     },
-    datatypes::{DataType, Field, Int32Type, Schema},
+    datatypes::{DataType, Field, Schema},
 };
 use bitcoin::Address;
 use itertools::Itertools;
 use parquet::{arrow::ArrowWriter, data_type::AsBytes};
+use rayon::ThreadPoolBuilder;
 
-use super::s3::CloudStorageTrait;
+use super::s3::{CloudStorage, CloudStorageTrait};
 
 pub struct BtcPartition {
     pub height_start: u32,
@@ -455,8 +456,81 @@ fn create_writer(path: &str, schema: Arc<Schema>) -> Result<ArrowWriter<File>> {
     Ok(writer)
 }
 
+pub struct PartitionWork {
+    height: u32,
+    txs_batch: RecordBatch,
+    outs_batch: RecordBatch,
+    ins_batch: RecordBatch,
+}
+
+impl PartitionWork {
+    pub fn new(
+        height: u32,
+        txs_batch: RecordBatch,
+        outs_batch: RecordBatch,
+        ins_batch: RecordBatch,
+    ) -> PartitionWork {
+        PartitionWork {
+            height,
+            txs_batch,
+            outs_batch,
+            ins_batch,
+        }
+    }
+}
+
+pub type Callback = Arc<dyn Fn(u32) -> Result<PartitionWork> + Send + Sync>;
+
+pub async fn process_partition(path: &str, start: u32, end: u32, work: Callback) -> Result<()> {
+    let pool = ThreadPoolBuilder::new().num_threads(4).build()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    for height in start..end {
+        let tx = tx.clone();
+        let work = work.clone();
+        pool.spawn(move || {
+            tx.send(work(height)).unwrap();
+        });
+    }
+    drop(tx);
+
+    let client = CloudStorage::new()?;
+    let mut partitioner =
+        Partitioner::load_partitions(&client, path, path, BtcPartitionData::Tx).await?;
+    let mut out_partitioner =
+        Partitioner::load_partitions(&client, path, path, BtcPartitionData::Output).await?;
+    let mut input_partitioner =
+        Partitioner::load_partitions(&client, path, path, BtcPartitionData::Input).await?;
+
+    for result in rx {
+        match result {
+            Ok(part) => {
+                let partition = partitioner.work_partition_for_height(part.height).await?;
+                partition.write(part.txs_batch)?;
+                let out_partition = out_partitioner
+                    .work_partition_for_height(part.height)
+                    .await?;
+                out_partition.write(part.outs_batch)?;
+                let input_partition = input_partitioner
+                    .work_partition_for_height(part.height)
+                    .await?;
+                input_partition.write(part.ins_batch)?;
+            }
+            Err(e) => {
+                log::error!("Error processing partition: {}", e);
+            }
+        }
+    }
+    partitioner.close_work_partition().await?;
+    out_partitioner.close_work_partition().await?;
+    input_partitioner.close_work_partition().await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use arrow::array::ListArray;
+
     use super::*;
 
     #[test]

@@ -36,6 +36,8 @@ error_chain! {
         S3ListObjectsError(::rusoto_core::RusotoError<::rusoto_s3::ListObjectsV2Error>);
         S3CreateBucketError(::rusoto_core::RusotoError<::rusoto_s3::CreateBucketError>);
         VarError(::std::env::VarError);
+        ThreadPool(::rayon::ThreadPoolBuildError);
+        SendError(::std::sync::mpsc::SendError<u32>);
     }
 }
 
