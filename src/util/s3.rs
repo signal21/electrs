@@ -69,13 +69,14 @@ impl CloudStorageTrait for CloudStorage {
             ..Default::default()
         };
         let output = self.client.list_objects_v2(list_objects_request).await?;
-        let object_list = output
-            .contents
-            .ok_or("No objects found.")?
-            .iter()
-            .map(|object| object.key.clone().unwrap_or_default())
-            .collect();
-        Ok(object_list)
+        if let Some(object_list) = output.contents {
+            Ok(object_list
+                .iter()
+                .map(|object| object.key.clone().unwrap_or_default())
+                .collect())
+        } else {
+            Ok(vec![])
+        }
     }
 
     async fn upload_file(&self, bucket: &str, key: &str, data: Vec<u8>) -> Result<()> {
