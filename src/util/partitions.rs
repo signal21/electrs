@@ -297,7 +297,7 @@ impl BtcPartition {
 
     pub fn filename(&self) -> String {
         format!(
-            "{}/{}_{}_{}.parquet",
+            "{}/{}_{:0>7}_{:0>7}.parquet",
             self.path,
             self.info.prefix(),
             self.height_start,
@@ -468,26 +468,34 @@ mod tests {
         let p = BtcPartition::new("out", 0, BtcPartitionData::Tx);
         assert_eq!(p.height_start, 0);
         assert_eq!(p.height_end, 1000);
-        assert_eq!(p.filename(), "out/txs_0_1000.parquet");
+        assert_eq!(p.filename(), "out/txs_0000000_0001000.parquet");
+    }
+
+    #[test]
+    fn test_partition_max() {
+        let p = BtcPartition::new("out", 9999000, BtcPartitionData::Tx);
+        assert_eq!(p.height_start, 9999000);
+        assert_eq!(p.height_end, 10000000);
+        assert_eq!(p.filename(), "out/txs_9999000_10000000.parquet");
     }
 
     #[test]
     fn test_partition_from_filename() {
-        let p = BtcPartition::from_filename("out1", "blocks_0_100.parquet").unwrap();
+        let p = BtcPartition::from_filename("out1", "blocks_0000000_0000100.parquet").unwrap();
         assert_eq!(p.height_start, 0);
         assert_eq!(p.height_end, 100);
     }
 
     #[test]
     fn test_partition_from_bad_filename() {
-        let p = BtcPartition::from_filename("out1", "blocks_0_100").unwrap();
+        let p = BtcPartition::from_filename("out1", "blocks_0000000_0000100").unwrap();
         assert_eq!(p.height_start, 0);
         assert_eq!(p.height_end, 100);
     }
 
     #[test]
     fn test_partition_from_bad_filename2() {
-        let p = BtcPartition::from_filename("out1", "blocks_0_100.parquet").unwrap();
+        let p = BtcPartition::from_filename("out1", "blocks_0000000_0000100.parquet").unwrap();
         assert_eq!(p.height_start, 0);
         assert_eq!(p.height_end, 100);
     }
@@ -533,7 +541,7 @@ mod tests {
         let (_, part) = p.find_partition(50).unwrap();
         assert_eq!(part.height_start, 0);
         assert_eq!(part.height_end, 1000);
-        assert_eq!(part.filename(), "out/txs_0_1000.parquet");
+        assert_eq!(part.filename(), "out/txs_0000000_0001000.parquet");
     }
 
     #[tokio::test]
@@ -544,7 +552,7 @@ mod tests {
         let (_, part) = p.find_partition(1500).unwrap();
         assert_eq!(part.height_start, 1000);
         assert_eq!(part.height_end, 2000);
-        assert_eq!(part.filename(), "out/txs_1000_2000.parquet");
+        assert_eq!(part.filename(), "out/txs_0001000_0002000.parquet");
         assert_eq!(p.partitions.len(), 2);
     }
 
