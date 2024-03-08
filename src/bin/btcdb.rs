@@ -210,7 +210,7 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
                         let mut witnesses_group = Vec::new();
 
                         txids.iter().for_each(|txid| {
-                            hashes.push(txid.to_byte_array());
+                            hashes.push(txid.clone());
                             if let Some(raw) = query.lookup_raw_txn(txid, None) {
                                 let tx = deserialize(&raw).expect("failed to parse Transaction");
                                 in_total_sats.push(total_ins(query, &tx));
@@ -228,15 +228,15 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
                                     .ok();
                                     out_scripts.push(out.script_pubkey.to_bytes());
                                     out_addresses.push(addr);
-                                    out_txids.push(txid.to_byte_array());
+                                    out_txids.push(txid.clone());
                                     out_vouts.push(vout as u32);
                                     out_values.push(out.value.to_sat());
                                 }
 
                                 for (vin, txin) in tx.input.iter().enumerate() {
-                                    in_txids.push(txid.to_byte_array());
+                                    in_txids.push(txid.clone());
                                     in_vins.push(vin as u32);
-                                    prev_txids.push(txin.previous_output.txid.to_byte_array());
+                                    prev_txids.push(txin.previous_output.txid.clone());
                                     prev_vouts.push(txin.previous_output.vout);
                                     is_coinbases.push(is_coinbase(&txin));
                                     script_sigs.push(txin.script_sig.to_bytes());

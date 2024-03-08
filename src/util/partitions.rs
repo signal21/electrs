@@ -11,7 +11,7 @@ use arrow::{
     },
     datatypes::{DataType, Field, Int32Type, Schema},
 };
-use bitcoin::Address;
+use bitcoin::{Address, Txid};
 use itertools::Itertools;
 use parquet::{arrow::ArrowWriter, data_type::AsBytes};
 
@@ -47,7 +47,7 @@ impl BtcPartitionData {
         match self {
             BtcPartitionData::Tx => Arc::new(Schema::new(vec![
                 /* primary key */
-                Field::new("txid", DataType::Binary, false),
+                Field::new("txid", DataType::Utf8, false),
                 /* rest */
                 Field::new("height", DataType::UInt32, false),
                 /* transaction debit/credit */
@@ -59,7 +59,7 @@ impl BtcPartitionData {
             ])),
             BtcPartitionData::Output => Arc::new(Schema::new(vec![
                 /* primary key */
-                Field::new("txid", DataType::Binary, false),
+                Field::new("txid", DataType::Utf8, false),
                 Field::new("vout", DataType::UInt32, false),
                 /* rest */
                 Field::new("value", DataType::UInt64, false),
@@ -69,10 +69,10 @@ impl BtcPartitionData {
             ])),
             BtcPartitionData::Input => Arc::new(Schema::new(vec![
                 /* primary key */
-                Field::new("txid", DataType::Binary, false),
+                Field::new("txid", DataType::Utf8, false),
                 Field::new("vin", DataType::UInt32, false),
                 /* reference to output */
-                Field::new("prev_txid", DataType::Binary, false),
+                Field::new("prev_txid", DataType::Utf8, false),
                 Field::new("prev_vout", DataType::UInt32, false),
                 Field::new("is_coinbase", DataType::Boolean, false),
                 Field::new("script_sig", DataType::Binary, false),
@@ -126,7 +126,7 @@ impl BtcPartitionData {
 
 pub fn tx_batch(
     height: u32,
-    hashes: Vec<[u8; 32]>,
+    txids: Vec<Txid>,
     in_total_sats: Vec<u64>,
     out_total_sats: Vec<u64>,
     raws: Vec<Vec<u8>>,
@@ -136,10 +136,10 @@ pub fn tx_batch(
     let batch = RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(BinaryArray::from(
-                hashes.iter().map(|h| &h[..]).collect::<Vec<_>>(),
+            Arc::new(StringArray::from(
+                txids.iter().map(|txid| txid.to_string()).collect::<Vec<_>>(),
             )) as ArrayRef,
-            Arc::new(UInt32Array::from(vec![height; hashes.len()])) as ArrayRef,
+            Arc::new(UInt32Array::from(vec![height; txids.len()])) as ArrayRef,
             Arc::new(UInt64Array::from(in_total_sats)) as ArrayRef,
             Arc::new(UInt64Array::from(out_total_sats)) as ArrayRef,
             Arc::new(BinaryArray::from_vec(
@@ -152,7 +152,7 @@ pub fn tx_batch(
 }
 
 pub fn output_batch(
-    txids: Vec<[u8; 32]>,
+    txids: Vec<Txid>,
     vouts: Vec<u32>,
     values: Vec<u64>,
     scripts: Vec<Vec<u8>>,
@@ -172,8 +172,8 @@ pub fn output_batch(
     let batch = RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(BinaryArray::from(
-                txids.iter().map(|h| &h[..]).collect::<Vec<_>>(),
+            Arc::new(StringArray::from(
+                txids.iter().map(|h| h.to_string()).collect::<Vec<_>>(),
             )) as ArrayRef,
             Arc::new(UInt32Array::from(vouts)) as ArrayRef,
             Arc::new(UInt64Array::from(values)) as ArrayRef,
@@ -199,9 +199,9 @@ pub fn output_batch(
 }
 
 pub fn input_batch(
-    txids: Vec<[u8; 32]>,
+    txids: Vec<Txid>,
     vins: Vec<u32>,
-    prev_txids: Vec<[u8; 32]>,
+    prev_txids: Vec<Txid>,
     prev_vouts: Vec<u32>,
     is_coinbases: Vec<bool>,
     script_sigs: Vec<Vec<u8>>,
@@ -222,12 +222,12 @@ pub fn input_batch(
     let batch = RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(BinaryArray::from(
-                txids.iter().map(|h| &h[..]).collect::<Vec<_>>(),
+            Arc::new(StringArray::from(
+                txids.iter().map(|txid| txid.to_string()).collect::<Vec<_>>(),
             )) as ArrayRef,
             Arc::new(UInt32Array::from(vins)) as ArrayRef,
-            Arc::new(BinaryArray::from(
-                prev_txids.iter().map(|h| &h[..]).collect::<Vec<_>>(),
+            Arc::new(StringArray::from(
+                prev_txids.iter().map(|txid| txid.to_string()).collect::<Vec<_>>(),
             )) as ArrayRef,
             Arc::new(UInt32Array::from(prev_vouts)) as ArrayRef,
             Arc::new(BooleanArray::from(is_coinbases)) as ArrayRef,
@@ -457,6 +457,10 @@ fn create_writer(path: &str, schema: Arc<Schema>) -> Result<ArrowWriter<File>> {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use bitcoin::hashes::sha256d::Hash;
+
     use super::*;
 
     #[test]
@@ -559,9 +563,35 @@ mod tests {
             vec![vec![7, 8, 9], vec![10, 11, 12]],
         ];
         let batch = input_batch(
-            vec![[1; 32], [2; 32]],
+            vec![
+                Txid::from(
+                    Hash::from_str(
+                        "7647699adf453499ad1eacc2ba5cf1e3151cf1b7a2cf63f543d10657113e9c1c",
+                    )
+                    .unwrap(),
+                ),
+                Txid::from(
+                    Hash::from_str(
+                        "7647699adf453499ad1eacc2ba5cf1e3151cf1b7a2cf63f543d10657113e9c1d",
+                    )
+                    .unwrap(),
+                ),
+            ],
             vec![0, 1],
-            vec![[3; 32], [4; 32]],
+            vec![
+                Txid::from(
+                    Hash::from_str(
+                        "7647699adf453499ad1eacc2ba5cf1e3151cf1b7a2cf63f543d10657113e9c1c",
+                    )
+                    .unwrap(),
+                ),
+                Txid::from(
+                    Hash::from_str(
+                        "7647699adf453499ad1eacc2ba5cf1e3151cf1b7a2cf63f543d10657113e9c1d",
+                    )
+                    .unwrap(),
+                ),
+            ],
             vec![0, 1],
             vec![true, false],
             vec![[5; 32].to_vec(), [6; 32].to_vec()],
