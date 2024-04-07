@@ -2,7 +2,10 @@ use crate::errors::*;
 
 use async_trait::async_trait;
 use aws_config::Region;
-use aws_sdk_s3::config::Credentials;
+use aws_sdk_s3::{
+    config::Credentials,
+    types::{CompletedMultipartUpload, CompletedPart},
+};
 use aws_smithy_runtime_api::client::behavior_version;
 
 pub struct CloudStorage {
@@ -95,6 +98,7 @@ impl CloudStorageTrait for CloudStorage {
         let chunks = data.chunks(chunk_size);
         let mut part_number = 1;
         let upload_id = multipart_upload_res.upload_id.unwrap();
+        let mut upload_parts = vec![];
         for chunk in chunks {
             let chunk_data = chunk.to_vec();
             let _output = self
@@ -107,14 +111,26 @@ impl CloudStorageTrait for CloudStorage {
                 .body(chunk_data.into())
                 .send()
                 .await?;
+            upload_parts.push(
+                CompletedPart::builder()
+                    .part_number(part_number)
+                    .e_tag(_output.e_tag.unwrap())
+                    .build(),
+            );
             part_number += 1;
         }
+        let completed_multipart_upload: CompletedMultipartUpload =
+            CompletedMultipartUpload::builder()
+                .set_parts(Some(upload_parts))
+                .build();
+
         let _x = self
             .client
             .complete_multipart_upload()
             .bucket(bucket)
             .key(key)
             .upload_id(&upload_id)
+            .multipart_upload(completed_multipart_upload)
             .send()
             .await?;
         Ok(())
