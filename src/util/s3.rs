@@ -1,11 +1,12 @@
 use crate::errors::*;
 
 use async_trait::async_trait;
-use rusoto_core::{credential::StaticProvider, HttpClient, Region};
-use rusoto_s3::{CreateBucketRequest, ListObjectsV2Request, PutObjectRequest, S3Client, S3};
+use aws_config::Region;
+use aws_sdk_s3::config::Credentials;
+use aws_smithy_runtime_api::client::behavior_version;
 
 pub struct CloudStorage {
-    client: S3Client,
+    client: aws_sdk_s3::Client,
 }
 
 #[async_trait]
@@ -14,28 +15,26 @@ pub trait CloudStorageTrait {
     async fn list_buckets(&self) -> Result<Vec<String>>;
     async fn list_objects(&self, bucket: &str) -> Result<Vec<String>>;
     async fn upload_file(&self, bucket: &str, key: &str, data: Vec<u8>) -> Result<()>;
+    async fn upload_multi_part_file(&self, bucket: &str, key: &str, data: Vec<u8>) -> Result<()>;
 }
 
 impl CloudStorage {
     pub fn new() -> Result<CloudStorage> {
-        let region = Region::Custom {
-            name: "us-phoenix-1".to_owned(),
-            endpoint: "https://axe36dfmp6f0.compat.objectstorage.us-phoenix-1.oraclecloud.com"
-                .to_owned(),
-        };
-
         // Setup authentication
         let access_key = std::env::var("OCI_ACCESS_KEY")?;
         let secret_key = std::env::var("OCI_SECRET_KEY")?;
 
-        let provider = StaticProvider::new_minimal(access_key, secret_key);
+        let cred = Credentials::new(access_key, secret_key, None, None, "loaded-from-custom-env");
 
-        // Create the S3 client
-        let client = S3Client::new_with(
-            HttpClient::new().expect("failed to create request dispatcher"),
-            provider,
-            region,
-        );
+        let s3_config = aws_sdk_s3::config::Builder::new()
+            .behavior_version(behavior_version::BehaviorVersion::latest())
+            .endpoint_url("https://axe36dfmp6f0.compat.objectstorage.us-phoenix-1.oraclecloud.com")
+            .credentials_provider(cred)
+            .region(Region::new("us-phoenix-1"))
+            .force_path_style(true) // apply bucketname as path param instead of pre-domain
+            .build();
+
+        let client = aws_sdk_s3::Client::from_conf(s3_config);
 
         Ok(CloudStorage { client })
     }
@@ -44,16 +43,12 @@ impl CloudStorage {
 #[async_trait]
 impl CloudStorageTrait for CloudStorage {
     async fn create_bucket(&self, bucket: &str) -> Result<()> {
-        let create_bucket_request = CreateBucketRequest {
-            bucket: bucket.to_owned(),
-            ..Default::default()
-        };
-        let _x = self.client.create_bucket(create_bucket_request).await?;
+        let _x = self.client.create_bucket().bucket(bucket).send().await?;
         Ok(())
     }
 
     async fn list_buckets(&self) -> Result<Vec<String>> {
-        let output = self.client.list_buckets().await?;
+        let output = self.client.list_buckets().send().await?;
         let bucket_list = output
             .buckets
             .ok_or("No buckets found.")?
@@ -64,11 +59,7 @@ impl CloudStorageTrait for CloudStorage {
     }
 
     async fn list_objects(&self, bucket: &str) -> Result<Vec<String>> {
-        let list_objects_request = ListObjectsV2Request {
-            bucket: bucket.to_owned(),
-            ..Default::default()
-        };
-        let output = self.client.list_objects_v2(list_objects_request).await?;
+        let output = self.client.list_objects_v2().bucket(bucket).send().await?;
         if let Some(object_list) = output.contents {
             Ok(object_list
                 .iter()
@@ -80,13 +71,52 @@ impl CloudStorageTrait for CloudStorage {
     }
 
     async fn upload_file(&self, bucket: &str, key: &str, data: Vec<u8>) -> Result<()> {
-        let put_request = PutObjectRequest {
-            bucket: bucket.to_owned(),
-            key: key.to_owned(),
-            body: Some(data.into()),
-            ..Default::default()
-        };
-        let _x = self.client.put_object(put_request).await?;
+        let _x = self
+            .client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(data.into())
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    async fn upload_multi_part_file(&self, bucket: &str, key: &str, data: Vec<u8>) -> Result<()> {
+        let multipart_upload_res = self
+            .client
+            .create_multipart_upload()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await?;
+        // chunks of 10MB each
+        let chunk_size = 100 * 1024 * 1024;
+        let chunks = data.chunks(chunk_size);
+        let mut part_number = 1;
+        let upload_id = multipart_upload_res.upload_id.unwrap();
+        for chunk in chunks {
+            let chunk_data = chunk.to_vec();
+            let _output = self
+                .client
+                .upload_part()
+                .bucket(bucket)
+                .key(key)
+                .part_number(part_number)
+                .upload_id(&upload_id)
+                .body(chunk_data.into())
+                .send()
+                .await?;
+            part_number += 1;
+        }
+        let _x = self
+            .client
+            .complete_multipart_upload()
+            .bucket(bucket)
+            .key(key)
+            .upload_id(&upload_id)
+            .send()
+            .await?;
         Ok(())
     }
 }
@@ -96,6 +126,7 @@ impl CloudStorageTrait for CloudStorage {
 
 //     #[tokio::test]
 //     async fn test_list_buckets() {
+//         dotenv::dotenv().ok();
 //         let st = CloudStorage::new().unwrap();
 //         let buckets = st.list_buckets().await;
 //         assert!(buckets.is_ok());
@@ -108,5 +139,8 @@ impl CloudStorageTrait for CloudStorage {
 //         let objects = objects.unwrap();
 //         assert!(objects.len() > 0);
 //         std::println!("Objects: {:?}", objects);
+
+//         let file = std::fs::read("target/debug/btcdb").unwrap();
+//         let _ = st.upload_file("data", "btcdb", file).await;
 //     }
 // }

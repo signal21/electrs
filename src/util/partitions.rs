@@ -341,7 +341,7 @@ impl BtcPartition {
             writer.close()?;
             self.writer = None;
             storage
-                .upload_file(bucket, &self.filename(), fs::read(self.filename())?)
+                .upload_multi_part_file(bucket, &self.filename(), fs::read(self.filename())?)
                 .await?;
             self.delete_file()?;
         }
@@ -524,6 +524,15 @@ mod tests {
         }
 
         async fn upload_file(&self, _bucket: &str, _key: &str, _data: Vec<u8>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn upload_multi_part_file(
+            &self,
+            _bucket: &str,
+            _key: &str,
+            _data: Vec<u8>,
+        ) -> Result<()> {
             Ok(())
         }
     }

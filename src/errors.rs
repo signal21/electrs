@@ -1,3 +1,5 @@
+use aws_smithy_runtime_api::http::Response;
+
 error_chain! {
     types {
         Error, ErrorKind, ResultExt, Result;
@@ -31,10 +33,13 @@ error_chain! {
         Io(::std::io::Error);
         Parquet(::parquet::errors::ParquetError);
         Arrow(::arrow::error::ArrowError);
-        S3ListBucketError(::rusoto_core::RusotoError<::rusoto_s3::ListBucketsError>);
-        S3PutObjectError(::rusoto_core::RusotoError<::rusoto_s3::PutObjectError>);
-        S3ListObjectsError(::rusoto_core::RusotoError<::rusoto_s3::ListObjectsV2Error>);
-        S3CreateBucketError(::rusoto_core::RusotoError<::rusoto_s3::CreateBucketError>);
+        S3ListBucketError(::aws_sdk_s3::error::SdkError<::aws_sdk_s3::operation::list_buckets::ListBucketsError, Response>);
+        S3PutObjectError(::aws_sdk_s3::error::SdkError<::aws_sdk_s3::operation::put_object::PutObjectError, Response>);
+        S3ListObjectsError(::aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Error, Response>);
+        S3CreateBucketError(::aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::create_bucket::CreateBucketError, Response>);
+        S3CreateMultipartUploadError(::aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadError, Response>);
+        S3UploadPartError(::aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::upload_part::UploadPartError, Response>);
+        S3CompleteMultipartUploadError(::aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::complete_multipart_upload::CompleteMultipartUploadError, Response>);
         VarError(::std::env::VarError);
     }
 }
