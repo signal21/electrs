@@ -83,10 +83,8 @@ impl BtcPartitionData {
                 ),
             ])),
             BtcPartitionData::Block => Arc::new(Schema::new(vec![
-                /* primary key */
-                Field::new("hash", DataType::Binary, false),
-                /* rest */
                 Field::new("height", DataType::UInt32, false),
+                Field::new("hash", DataType::Binary, false),
                 Field::new("time", DataType::UInt32, false),
                 Field::new("size", DataType::UInt32, false),
                 Field::new("weight", DataType::UInt32, false),
@@ -137,7 +135,10 @@ pub fn tx_batch(
         schema,
         vec![
             Arc::new(StringArray::from(
-                txids.iter().map(|txid| txid.to_string()).collect::<Vec<_>>(),
+                txids
+                    .iter()
+                    .map(|txid| txid.to_string())
+                    .collect::<Vec<_>>(),
             )) as ArrayRef,
             Arc::new(UInt32Array::from(vec![height; txids.len()])) as ArrayRef,
             Arc::new(UInt64Array::from(in_total_sats)) as ArrayRef,
@@ -223,11 +224,17 @@ pub fn input_batch(
         schema,
         vec![
             Arc::new(StringArray::from(
-                txids.iter().map(|txid| txid.to_string()).collect::<Vec<_>>(),
+                txids
+                    .iter()
+                    .map(|txid| txid.to_string())
+                    .collect::<Vec<_>>(),
             )) as ArrayRef,
             Arc::new(UInt32Array::from(vins)) as ArrayRef,
             Arc::new(StringArray::from(
-                prev_txids.iter().map(|txid| txid.to_string()).collect::<Vec<_>>(),
+                prev_txids
+                    .iter()
+                    .map(|txid| txid.to_string())
+                    .collect::<Vec<_>>(),
             )) as ArrayRef,
             Arc::new(UInt32Array::from(prev_vouts)) as ArrayRef,
             Arc::new(BooleanArray::from(is_coinbases)) as ArrayRef,
