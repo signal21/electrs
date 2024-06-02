@@ -22,7 +22,8 @@ use electrs::{
     util::{
         has_prevout, is_coinbase,
         partitions::{
-            block_batch, get_ranges, input_batch, output_batch, tx_batch, BtcPartition, BtcPartitionData, Partitioner
+            block_batch, get_ranges, input_batch, output_batch, tx_batch, BtcPartition,
+            BtcPartitionData, Partitioner,
         },
         s3::CloudStorage,
     },
@@ -56,7 +57,13 @@ fn split_line_to_cmds(line: &str) -> Vec<String> {
     cmds
 }
 
-async fn write_txs(start: u32, end: u32, path: &str, query: &Arc<ChainQuery>, config: &Arc<Config>) -> Result<u32> {
+async fn write_txs(
+    start: u32,
+    end: u32,
+    path: &str,
+    query: &Arc<ChainQuery>,
+    config: &Arc<Config>,
+) -> Result<u32> {
     let client = CloudStorage::new()?;
     let mut partitioner =
         Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Tx).await?;
@@ -152,9 +159,10 @@ async fn write_txs(start: u32, end: u32, path: &str, query: &Arc<ChainQuery>, co
                 input_partition.write(in_batch)?;
             }
         } else {
-            println!("Block not found");
+            print!(".");
         }
     }
+    println!("");
     partitioner.close_work_partition().await?;
     out_partitioner.close_work_partition().await?;
     input_partitioner.close_work_partition().await?;
@@ -285,8 +293,12 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
             match best_height {
                 Some(height) => {
                     let ranges = get_ranges(height, max_height, 1000);
-                    for range in ranges {
-                        println!("Range: {:?}", range);
+                    if !ranges.is_empty() {
+                        write_blocks(query, 0, "prod").await?;
+                        for range in ranges {
+                            println!("Range: {:?}", range);
+                            write_txs(range.0, range.1, "prod", query, config).await?;
+                        }
                     }
                 }
                 None => {
