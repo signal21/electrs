@@ -56,7 +56,7 @@ fn split_line_to_cmds(line: &str) -> Vec<String> {
     cmds
 }
 
-async fn write_txs(start: u32, end: u32, path: &str, query: &Arc<ChainQuery>, config: &Arc<Config>) -> Result<()> {
+async fn write_txs(start: u32, end: u32, path: &str, query: &Arc<ChainQuery>, config: &Arc<Config>) -> Result<u32> {
     let client = CloudStorage::new()?;
     let mut partitioner =
         Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Tx).await?;
@@ -65,8 +65,10 @@ async fn write_txs(start: u32, end: u32, path: &str, query: &Arc<ChainQuery>, co
         Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Output).await?;
     let mut input_partitioner =
         Partitioner::load_partitions(&client, &path, &path, BtcPartitionData::Input).await?;
+    let mut max_block = 0 as u32;
     for height in start..end {
         if let Some(block_id) = query.blockid_by_height(height as usize) {
+            max_block = height;
             let work_partition = partitioner.work_partition_for_height(height).await?;
             let out_work_partition = out_partitioner.work_partition_for_height(height).await?;
             let input_partition = input_partitioner.work_partition_for_height(height).await?;
@@ -156,7 +158,7 @@ async fn write_txs(start: u32, end: u32, path: &str, query: &Arc<ChainQuery>, co
     partitioner.close_work_partition().await?;
     out_partitioner.close_work_partition().await?;
     input_partitioner.close_work_partition().await?;
-    Ok(())
+    Ok(max_block)
 }
 
 async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) -> Result<()> {
@@ -269,7 +271,9 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
             let start = cmds[1].parse::<u32>().chain_err(|| "Invalid tx height")?;
             let end = cmds[2].parse::<u32>().chain_err(|| "Invalid tx height")?;
             let path = cmds[3].clone();
-            write_txs(start, end, &path, query, config).await?;
+            let max_block = write_txs(start, end, &path, query, config).await?;
+            println!("Max block: {}", max_block);
+            query.set_watermark_tip(max_block);
         }
         "tip" => {
             let tip = query.watermark_tip();
