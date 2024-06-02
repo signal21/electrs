@@ -297,7 +297,8 @@ async fn switch_line(line: &str, config: &Arc<Config>, query: &Arc<ChainQuery>) 
                         write_blocks(query, 0, "prod").await?;
                         for range in ranges {
                             println!("Range: {:?}", range);
-                            write_txs(range.0, range.1, "prod", query, config).await?;
+                            let max_block = write_txs(range.0, range.1, "prod", query, config).await?;
+                            query.set_watermark_tip(max_block);
                         }
                     }
                 }
