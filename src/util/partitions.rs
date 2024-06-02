@@ -449,6 +449,15 @@ impl<'a> Partitioner<'a> {
         let (_index, partition) = self.add_partition(height).await?;
         Ok(partition)
     }
+
+    pub fn info(&self) {
+        println!("Path: {}", self.path);
+        println!("Bucket: {}", self.bucket);
+        println!("Partitions: {:?}", self.partitions.len());
+        for p in &self.partitions {
+            println!("{} - {} {}", p.height_start, p.height_end, p.filename());
+        }
+    }
 }
 
 fn create_writer(path: &str, schema: Arc<Schema>) -> Result<ArrowWriter<File>> {
@@ -460,6 +469,19 @@ fn create_writer(path: &str, schema: Arc<Schema>) -> Result<ArrowWriter<File>> {
     let props = parquet::file::properties::WriterProperties::builder().build();
     let writer = ArrowWriter::try_new(file, schema, Some(props))?;
     Ok(writer)
+}
+
+pub fn get_ranges(best_height: u32, max_height: u32, partition_size: u32) -> Vec<(u32, u32)> {
+    let mut ranges = Vec::new();
+    let mut start = (best_height + 1) / 1000 * 1000;
+    let mut end = start + partition_size;
+    while end < max_height {
+        ranges.push((start, end));
+        start = end;
+        end += partition_size;
+    }
+    ranges.push((start, end));
+    ranges
 }
 
 #[cfg(test)]
@@ -634,5 +656,55 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn test_slicing_blocks() {
+
+        let test_cases = vec![
+            (
+                120_000 - 2000, 120_001, 1000, vec![
+                    (120_000 - 2000, 120_000 - 2000 + 1000),
+                    (120_000 - 2000 + 1000, 120_000 - 2000 + 2000),
+                    (120_000 - 2000 + 2000, 120_000 - 2000 + 3000),
+                ]
+            ),
+            (
+                100_000 - 1, 104_001, 1000, vec![
+                    (100_000, 101_000),
+                    (101_000, 102_000),
+                    (102_000, 103_000),
+                    (103_000, 104_000),
+                    (104_000, 105_000),
+                ]
+            ),
+            (
+                100_100, 104_001, 1000, vec![
+                    (100_000, 101_000),
+                    (101_000, 102_000),
+                    (102_000, 103_000),
+                    (103_000, 104_000),
+                    (104_000, 105_000),
+                ]
+            ),
+            (
+                100_100, 100_200, 1000, vec![
+                    (100_000, 101_000),
+                ]
+            ),
+            (
+                100_000 - 1, 100_200, 1000, vec![
+                    (100_000, 101_000),
+                ]
+            ),
+        ];
+
+        for (best_height, max_height, step, expected_ranges) in test_cases {
+            let ranges = get_ranges(best_height, max_height, step);
+            assert_eq!(ranges.len(), expected_ranges.len());
+            for (i, &(start, end)) in expected_ranges.iter().enumerate() {
+                assert_eq!(ranges[i], (start, end));
+            }
+        }
     }
 }

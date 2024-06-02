@@ -30,7 +30,7 @@ use crate::errors::*;
 use crate::metrics::{Gauge, HistogramOpts, HistogramTimer, HistogramVec, MetricOpts, Metrics};
 use crate::util::{
     bincode, full_hash, has_prevout, is_spendable, BlockHeaderMeta, BlockId, BlockMeta,
-    BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr,
+    BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr
 };
 
 use crate::new_index::db::{DBFlush, DBRow, ReverseScanIterator, ScanIterator, DB};
@@ -49,6 +49,7 @@ pub struct Store {
     added_blockhashes: RwLock<HashSet<BlockHash>>,
     indexed_blockhashes: RwLock<HashSet<BlockHash>>,
     indexed_headers: RwLock<HeaderList>,
+    watermark: DB,
 }
 
 impl Store {
@@ -88,6 +89,8 @@ impl Store {
             HeaderList::empty()
         };
 
+        let synced_blocks = DB::open(&path.join("synced_blocks"), config);
+
         Store {
             txstore_db,
             history_db,
@@ -95,6 +98,7 @@ impl Store {
             added_blockhashes: RwLock::new(added_blockhashes),
             indexed_blockhashes: RwLock::new(indexed_blockhashes),
             indexed_headers: RwLock::new(headers),
+            watermark: synced_blocks,
         }
     }
 
@@ -108,6 +112,10 @@ impl Store {
 
     pub fn cache_db(&self) -> &DB {
         &self.cache_db
+    }
+
+    pub fn watermark_db(&self) -> &DB {
+        &self.watermark
     }
 
     pub fn done_initial_sync(&self) -> bool {
@@ -834,6 +842,18 @@ impl ChainQuery {
             .header_by_blockhash(headers.tip())
             .expect("missing chain tip")
             .clone()
+    }
+
+    pub fn watermark_tip(&self) -> Option<u32> {
+        self.store.watermark_db().get(b"tip").map(|b| {
+            let mut tip = [0; 4];
+            tip.copy_from_slice(&b);
+            u32::from_le_bytes(tip)
+        })
+    }
+
+    pub fn set_watermark_tip(&self, tip: u32) {
+        self.store.watermark_db().put_sync(b"tip", &tip.to_le_bytes());
     }
 
     // TODO: can we pass txids as a "generic iterable"?
