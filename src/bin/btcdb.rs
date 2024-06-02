@@ -353,6 +353,14 @@ async fn run_script(config: Arc<Config>) -> Result<()> {
     if rl.load_history("history.txt").is_err() {
         println!("No previous history.");
     }
+
+    if  std::env::var("BTCDB_CMD").is_ok() {
+        let cmd = std::env::var("BTCDB_CMD").unwrap();
+        switch_line(cmd.as_str(), &config, &chain).await?;
+        process::exit(0);
+    }
+
+
     loop {
         match rl.readline(">> ") {
             Ok(line) => {
